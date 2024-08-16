@@ -1,0 +1,79 @@
+name: Build Librespot (with mass patches) for all platforms
+
+on:
+  push:
+    branches: [mass]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macOS:
+    runs-on: macos-11.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust support for ARM64 & prepare environment
+        run: |
+          rustup target add aarch64-apple-darwin
+          mkdir releases
+
+      - name: Build
+        run: |
+          cargo build --release --no-default-features --features "passthrough-decoder"
+          cargo build --target=aarch64-apple-darwin --release --no-default-features --features "passthrough-decoder"
+
+      - name: Build fat binary
+        run: |
+          lipo -create \
+            -arch x86_64 target/release/librespot \
+            -arch arm64 target/aarch64-apple-darwin/release/librespot \
+            -output releases/librespot-macos-arm64
+          chmod +x releases/librespot-macos-arm64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: librespot-mac
+          path: releases/
+
+  Linux:
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Prepare build environment
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          rustup target add i686-unknown-linux-musl
+          curl -L https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-musl.tar.gz | tar xvz
+          mkdir -p releases/linux
+
+      - name: "Install musl-tools to provide musl-gcc"
+        uses: awalsh128/cache-apt-pkgs-action@v1
+        with:
+          packages: "musl-tools"
+          version: "1.0"
+
+      - name: Build x86_64
+        run: |
+          cargo build --release --no-default-features --features "passthrough-decoder" --target=x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-x86_64
+          chmod +x releases/linux/librespot-linux-x86_64
+
+      - name: Build ARMv8
+        run: |
+          ./cross build --release --no-default-features --features "passthrough-decoder" --target=aarch64-unknown-linux-musl
+          cp target/aarch64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-aarch64
+          chmod +x releases/linux/librespot-linux-aarch64
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: librespot-linux
+          path: releases/

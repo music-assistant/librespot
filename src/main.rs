@@ -269,6 +269,7 @@ fn get_setup() -> Setup {
     const ONEVENT: &str = "onevent";
     #[cfg(feature = "passthrough-decoder")]
     const PASSTHROUGH: &str = "passthrough";
+    const PASSWORD: &str = "password";
     const PROXY: &str = "proxy";
     const QUIET: &str = "quiet";
     const SYSTEM_CACHE: &str = "system-cache";
@@ -312,7 +313,7 @@ fn get_setup() -> Setup {
     const ONEVENT_SHORT: &str = "o";
     #[cfg(feature = "passthrough-decoder")]
     const PASSTHROUGH_SHORT: &str = "P";
-    const TOKEN_SHORT: &str = "k";
+    const PASSWORD_SHORT: &str = "p";
     const EMIT_SINK_EVENTS_SHORT: &str = "Q";
     const QUIET_SHORT: &str = "q";
     const INITIAL_VOLUME_SHORT: &str = "R";
@@ -501,10 +502,10 @@ fn get_setup() -> Setup {
         "USERNAME",
     )
     .optopt(
-        TOKEN_SHORT,
-        TOKEN,
-        "Spotify access token to sign in with. Use empty string to obtain token.",
-        "TOKEN",
+        PASSWORD_SHORT,
+        PASSWORD,
+        "Password used to sign in with.",
+        "PASSWORD",
     )
     .optopt(
         ACCESS_TOKEN_SHORT,
@@ -1477,19 +1478,6 @@ fn get_setup() -> Setup {
 		tmp_dir,
 		autoplay,
 		..SessionConfig::default()
-    };
-
-    let credentials = {
-        let cached_creds = cache.as_ref().and_then(Cache::credentials);
-
-        if let Some(mut access_token) = opt_str(TOKEN) {
-            Some(Credentials::with_access_token(access_token))
-        } else {
-            if cached_creds.is_some() {
-                trace!("Using cached credentials.");
-            }
-            cached_creds
-        }
     };
 
     let enable_discovery = !opt_present(DISABLE_DISCOVERY);
