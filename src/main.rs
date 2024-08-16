@@ -265,12 +265,12 @@ fn get_setup() -> Setup {
     const ONEVENT: &str = "onevent";
     #[cfg(feature = "passthrough-decoder")]
     const PASSTHROUGH: &str = "passthrough";
-    const PASSWORD: &str = "password";
     const PROXY: &str = "proxy";
     const QUIET: &str = "quiet";
     const SYSTEM_CACHE: &str = "system-cache";
     const TEMP_DIR: &str = "tmp";
     const USERNAME: &str = "username";
+    const TOKEN: &str = "token";
     const VERBOSE: &str = "verbose";
     const VERSION: &str = "version";
     const VOLUME_CTRL: &str = "volume-ctrl";
@@ -307,7 +307,7 @@ fn get_setup() -> Setup {
     const ONEVENT_SHORT: &str = "o";
     #[cfg(feature = "passthrough-decoder")]
     const PASSTHROUGH_SHORT: &str = "P";
-    const PASSWORD_SHORT: &str = "p";
+    const TOKEN_SHORT: &str = "k";
     const EMIT_SINK_EVENTS_SHORT: &str = "Q";
     const QUIET_SHORT: &str = "q";
     const INITIAL_VOLUME_SHORT: &str = "R";
@@ -496,10 +496,10 @@ fn get_setup() -> Setup {
         "USERNAME",
     )
     .optopt(
-        PASSWORD_SHORT,
-        PASSWORD,
-        "Password used to sign in with.",
-        "PASSWORD",
+        TOKEN_SHORT,
+        TOKEN,
+        "Spotify access token to sign in with. Use empty string to obtain token.",
+        "TOKEN",
     )
     .optopt(
         ACCESS_TOKEN_SHORT,
@@ -1184,13 +1184,6 @@ fn get_setup() -> Setup {
         }
     };
 
-    let enable_discovery = !opt_present(DISABLE_DISCOVERY);
-
-    if credentials.is_none() && !enable_discovery && !enable_oauth {
-        error!("Credentials are required if discovery and oauth login are disabled.");
-        exit(1);
-    }
-
     let oauth_port = if opt_present(OAUTH_PORT) {
         if !enable_oauth {
             warn!(
@@ -1218,6 +1211,8 @@ fn get_setup() -> Setup {
     } else {
         Some(5588)
     };
+
+    let enable_discovery = !opt_present(DISABLE_DISCOVERY);
 
     if !enable_discovery && opt_present(ZEROCONF_PORT) {
         warn!(
@@ -1413,6 +1408,26 @@ fn get_setup() -> Setup {
         }
     };
 
+    // #1046: not all connections are supplied an `autoplay` user attribute to run statelessly.
+    // This knob allows for a manual override.
+    let autoplay = match opt_str(AUTOPLAY) {
+        Some(value) => match value.as_ref() {
+            "on" => Some(true),
+            "off" => Some(false),
+            _ => {
+                invalid_error_msg(
+                    AUTOPLAY,
+                    AUTOPLAY_SHORT,
+                    &opt_str(AUTOPLAY).unwrap_or_default(),
+                    "on, off",
+                    "",
+                );
+                exit(1);
+            }
+        },
+        None => SessionConfig::default().autoplay,
+    };
+
     let session_config = SessionConfig {
         device_id: device_id(&connect_config.name),
         proxy: opt_str(PROXY).or_else(|| std::env::var("http_proxy").ok()).map(
@@ -1445,6 +1460,74 @@ fn get_setup() -> Setup {
 		tmp_dir,
 		autoplay,
 		..SessionConfig::default()
+    };
+
+    let credentials = {
+        let cached_creds = cache.as_ref().and_then(Cache::credentials);
+
+        if let Some(mut access_token) = opt_str(TOKEN) {
+            Some(Credentials::with_access_token(access_token))
+         } else {
+            if cached_creds.is_some() {
+                trace!("Using cached credentials.");
+            }
+            cached_creds
+        }
+    };
+
+    let enable_discovery = !opt_present(DISABLE_DISCOVERY);
+
+    if credentials.is_none() && !enable_discovery {
+        error!("Credentials are required if discovery is disabled.");
+        exit(1);
+    }
+
+    if !enable_discovery && opt_present(ZEROCONF_PORT) {
+        warn!(
+            "With the `--{}` / `-{}` flag set `--{}` / `-{}` has no effect.",
+            DISABLE_DISCOVERY, DISABLE_DISCOVERY_SHORT, ZEROCONF_PORT, ZEROCONF_PORT_SHORT
+        );
+    }
+
+    let zeroconf_port = if enable_discovery {
+        opt_str(ZEROCONF_PORT)
+            .map(|port| match port.parse::<u16>() {
+                Ok(value) if value != 0 => value,
+                _ => {
+                    let valid_values = &format!("1 - {}", u16::MAX);
+                    invalid_error_msg(ZEROCONF_PORT, ZEROCONF_PORT_SHORT, &port, valid_values, "");
+
+                    exit(1);
+                }
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    let zeroconf_ip: Vec<std::net::IpAddr> = if opt_present(ZEROCONF_INTERFACE) {
+        if let Some(zeroconf_ip) = opt_str(ZEROCONF_INTERFACE) {
+            zeroconf_ip
+                .split(',')
+                .map(|s| {
+                    s.trim().parse::<std::net::IpAddr>().unwrap_or_else(|_| {
+                        invalid_error_msg(
+                            ZEROCONF_INTERFACE,
+                            ZEROCONF_INTERFACE_SHORT,
+                            s,
+                            "IPv4 and IPv6 addresses",
+                            "",
+                        );
+                        exit(1);
+                    })
+                })
+                .collect()
+        } else {
+            warn!("Unable to use zeroconf-interface option, default to all interfaces.");
+            vec![]
+        }
+    } else {
+        vec![]
     };
 
     let player_config = {
