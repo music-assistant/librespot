@@ -21,6 +21,7 @@ use librespot::{
     core::{
         authentication::Credentials, cache::Cache, config::DeviceType, version, Session,
         SessionConfig,
+        spotify_id::{SpotifyId, SpotifyItemType},
     },
     playback::{
         audio_backend::{self, SinkBuilder, BACKENDS},
@@ -29,6 +30,7 @@ use librespot::{
         },
         dither,
         mixer::{self, MixerConfig, MixerFn},
+        mixer::NoOpVolume,
         player::{coefficient_to_duration, duration_to_coefficient, Player},
     },
 };
@@ -217,6 +219,8 @@ struct Setup {
     player_event_program: Option<String>,
     emit_sink_events: bool,
     zeroconf_ip: Vec<std::net::IpAddr>,
+    single_track:  Option<String>,
+    start_position: u32,
 }
 
 fn get_setup() -> Setup {
@@ -277,6 +281,7 @@ fn get_setup() -> Setup {
     const VOLUME_RANGE: &str = "volume-range";
     const ZEROCONF_PORT: &str = "zeroconf-port";
     const ZEROCONF_INTERFACE: &str = "zeroconf-interface";
+    const SINGLE_TRACK: &str = "single-track";
 
     // Mostly arbitrary.
     const AP_PORT_SHORT: &str = "a";
@@ -638,6 +643,18 @@ fn get_setup() -> Setup {
         ZEROCONF_INTERFACE,
         "Comma-separated interface IP addresses on which zeroconf will bind. Defaults to all interfaces. Ignored by DNS-SD.",
         "IP"
+    )
+    .optopt(
+        "",
+        SINGLE_TRACK,
+        "Play a single track ID and exit.",
+        "ID"
+    )
+    .optopt(
+        "",
+        "start-position",
+        "Position (in seconds) where playback should be started. Only valid with the --single-track option.",
+        "STARTPOSITION"
     );
 
     #[cfg(feature = "passthrough-decoder")]
@@ -1467,7 +1484,7 @@ fn get_setup() -> Setup {
 
         if let Some(mut access_token) = opt_str(TOKEN) {
             Some(Credentials::with_access_token(access_token))
-         } else {
+        } else {
             if cached_creds.is_some() {
                 trace!("Using cached credentials.");
             }
@@ -1798,6 +1815,10 @@ fn get_setup() -> Setup {
     let player_event_program = opt_str(ONEVENT);
     let emit_sink_events = opt_present(EMIT_SINK_EVENTS);
 
+    let start_position = matches.opt_str("start-position")
+        .unwrap_or("0".to_string())
+        .parse::<f32>().unwrap_or(0.0);
+
     Setup {
         format,
         backend,
@@ -1816,8 +1837,11 @@ fn get_setup() -> Setup {
         player_event_program,
         emit_sink_events,
         zeroconf_ip,
+        single_track: matches.opt_str("single-track"),
+        start_position: (start_position * 1000.0) as u32,
     }
 }
+
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -1839,10 +1863,45 @@ async fn main() {
     let mut discovery = None;
     let mut connecting = false;
     let mut _event_handler: Option<EventHandler> = None;
+    let mut sys = System::new();
+
+    let backend = setup.backend;
+    let format = setup.format;
+    let backend = setup.backend;
+    let device = setup.device.clone();
+    let player_config = setup.player_config.clone();
 
     let mut session = Session::new(setup.session_config.clone(), setup.cache.clone());
 
-    let mut sys = System::new();
+    if let Some(ref track_id) = setup.single_track {
+        // Handle playback of single track + exit
+
+        let mut track = SpotifyId::from_uri(
+            track_id
+                .replace("spotty://", "spotify:track:")
+                .replace("://", ":")
+                .as_str(),
+        ).unwrap();
+        track.item_type = SpotifyItemType::Track;
+
+        if let Some(last_credentials) = setup.credentials.clone() {
+            info!("Connecting...");
+            if let Err(e) = session.connect(last_credentials, false).await {
+                error!("Error connecting: {}", e);
+                exit(1);
+            }
+        } else {
+            error!("No credentials provided. Authentication is not possible.");
+            exit(1);
+        }
+
+        let player = Player::new(player_config, session.clone(), Box::new(NoOpVolume), move || {
+            backend(None, format)
+        });
+        player.load(track, true, setup.start_position);
+        player.await_end_of_track().await;
+        exit(0);
+    }
 
     if setup.enable_discovery {
         // When started at boot as a service discovery may fail due to it
@@ -1913,12 +1972,7 @@ async fn main() {
 
     let mixer_config = setup.mixer_config.clone();
     let mixer = (setup.mixer)(mixer_config);
-    let player_config = setup.player_config.clone();
-
     let soft_volume = mixer.get_soft_volume();
-    let format = setup.format;
-    let backend = setup.backend;
-    let device = setup.device.clone();
     let player = Player::new(player_config, session.clone(), soft_volume, move || {
         (backend)(device, format)
     });
