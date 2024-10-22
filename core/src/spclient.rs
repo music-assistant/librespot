@@ -1,10 +1,8 @@
 use std::{
-    env::consts::OS,
     fmt::Write,
     time::{Duration, Instant},
 };
 
-use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use data_encoding::HEXUPPER_PERMISSIVE;
 use futures_util::future::IntoStream;
@@ -17,10 +15,10 @@ use hyper::body::Body;
 use hyper_util::client::legacy::ResponseFuture;
 use protobuf::{Enum, Message, MessageFull};
 use rand::RngCore;
-use sha1::{Digest, Sha1};
 use sysinfo::System;
 use thiserror::Error;
 
+use crate::config::{os_version, OS};
 use crate::{
     apresolve::SocketAddress,
     cdn_url::CdnUrl,
@@ -37,6 +35,7 @@ use crate::{
         login5::{LoginRequest, LoginResponse},
     },
     token::Token,
+    util,
     version::spotify_semantic_version,
     Error, FileId, SpotifyId,
 };
@@ -53,7 +52,7 @@ component! {
 pub type SpClientResult = Result<Bytes, Error>;
 
 #[allow(clippy::declare_interior_mutable_const)]
-const CLIENT_TOKEN: HeaderName = HeaderName::from_static("client-token");
+pub const CLIENT_TOKEN: HeaderName = HeaderName::from_static("client-token");
 
 #[derive(Debug, Error)]
 pub enum SpClientError {
@@ -292,7 +291,7 @@ impl SpClient {
             .platform_specific_data
             .mut_or_insert_default();
 
-        let os_version = System::os_version().unwrap_or_else(|| String::from("0"));
+        let os_version = os_version();
         let kernel_version = System::kernel_version().unwrap_or_else(|| String::from("0"));
 
         match os {
@@ -381,7 +380,7 @@ impl SpClient {
                         let length = hash_cash_challenge.length;
 
                         let mut suffix = [0u8; 0x10];
-                        let answer = Self::solve_hash_cash(&ctx, &prefix, length, &mut suffix);
+                        let answer = util::solve_hash_cash(&ctx, &prefix, length, &mut suffix);
 
                         match answer {
                             Ok(_) => {
@@ -556,7 +555,7 @@ impl SpClient {
                 .body(body.to_owned().into())?;
 
             // Reconnection logic: keep getting (cached) tokens because they might have expired.
-            let auth_token = self.auth_token().await?;
+            let token = self.session().login5().auth_token().await?;
 
             let headers_mut = request.headers_mut();
             if let Some(ref hdrs) = headers {
