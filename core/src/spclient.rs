@@ -11,7 +11,6 @@ use hyper::{
     header::{HeaderName, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RANGE},
     HeaderMap, Method, Request,
 };
-use hyper::body::Body;
 use hyper_util::client::legacy::ResponseFuture;
 use protobuf::{Enum, Message, MessageFull};
 use rand::RngCore;
@@ -32,7 +31,6 @@ use crate::{
         },
         connect::PutStateRequest,
         extended_metadata::BatchedEntityRequest,
-        login5::{LoginRequest, LoginResponse},
     },
     token::Token,
     util,
@@ -45,7 +43,6 @@ component! {
         accesspoint: Option<SocketAddress> = None,
         strategy: RequestStrategy = RequestStrategy::default(),
         client_token: Option<Token> = None,
-        auth_token: Option<Token> = None,
     }
 }
 
@@ -108,132 +105,6 @@ impl SpClient {
     pub async fn base_url(&self) -> Result<String, Error> {
         let ap = self.get_accesspoint().await?;
         Ok(format!("https://{}:{}", ap.0, ap.1))
-    }
-
-    fn solve_hash_cash(
-        ctx: &[u8],
-        prefix: &[u8],
-        length: i32,
-        dst: &mut [u8],
-    ) -> Result<(), Error> {
-        // after a certain number of seconds, the challenge expires
-        const TIMEOUT: u64 = 5; // seconds
-        let now = Instant::now();
-
-        let md = Sha1::digest(ctx);
-
-        let mut counter: i64 = 0;
-        let target: i64 = BigEndian::read_i64(&md[12..20]);
-
-        let suffix = loop {
-            if now.elapsed().as_secs() >= TIMEOUT {
-                return Err(Error::deadline_exceeded(format!(
-                    "{TIMEOUT} seconds expired"
-                )));
-            }
-
-            let suffix = [(target + counter).to_be_bytes(), counter.to_be_bytes()].concat();
-
-            let mut hasher = Sha1::new();
-            hasher.update(prefix);
-            hasher.update(&suffix);
-            let md = hasher.finalize();
-
-            if BigEndian::read_i64(&md[12..20]).trailing_zeros() >= (length as u32) {
-                break suffix;
-            }
-
-            counter += 1;
-        };
-
-        dst.copy_from_slice(&suffix);
-
-        Ok(())
-    }
-
-    async fn auth_token_request<M: Message>(&self, message: &M) -> Result<Bytes, Error> {
-        let client_token = self.client_token().await?;
-        let body = message.write_to_bytes()?;
-
-        let request = Request::builder()
-            .method(&Method::POST)
-            .uri("https://login5.spotify.com/v3/login")
-            .header(ACCEPT, HeaderValue::from_static("application/x-protobuf"))
-            .header(CLIENT_TOKEN, HeaderValue::from_str(&client_token)?)
-            .body(body.into())?;
-
-        self.session().http_client().request_body(request).await
-    }
-
-    pub async fn auth_token(&self) -> Result<Token, Error> {
-        let auth_token = self.lock(|inner| {
-            if let Some(token) = &inner.auth_token {
-                if token.is_expired() {
-                    inner.auth_token = None;
-                }
-            }
-            inner.auth_token.clone()
-        });
-
-        if let Some(auth_token) = auth_token {
-            return Ok(auth_token);
-        }
-
-        let client_id = match OS {
-            "macos" | "windows" => self.session().client_id(),
-            _ => SessionConfig::default().client_id,
-        };
-
-        let mut login_request = LoginRequest::new();
-        login_request.client_info.mut_or_insert_default().client_id = client_id;
-        login_request.client_info.mut_or_insert_default().device_id =
-            self.session().device_id().to_string();
-
-        let stored_credential = login_request.mut_stored_credential();
-        stored_credential.username = self.session().username().to_string();
-        stored_credential.data = self.session().auth_data().clone();
-
-        let mut response = self.auth_token_request(&login_request).await?;
-        let mut count = 0;
-        const MAX_TRIES: u8 = 3;
-
-        let token_response = loop {
-            count += 1;
-
-            let message = LoginResponse::parse_from_bytes(&response)?;
-            // TODO: Handle hash cash stuff
-            if message.has_ok() {
-                break message.ok().to_owned();
-            }
-
-            if count < MAX_TRIES {
-                response = self.auth_token_request(&login_request).await?;
-            } else {
-                return Err(Error::failed_precondition(format!(
-                    "Unable to solve any of {MAX_TRIES} hash cash challenges"
-                )));
-            }
-        };
-
-        let auth_token = Token {
-            access_token: token_response.access_token.clone(),
-            expires_in: Duration::from_secs(
-                token_response
-                    .access_token_expires_in
-                    .try_into()
-                    .unwrap_or(3600),
-            ),
-            token_type: "Bearer".to_string(),
-            scopes: vec![],
-            timestamp: Instant::now(),
-        };
-        self.lock(|inner| {
-            inner.auth_token = Some(auth_token.clone());
-        });
-
-        trace!("Got auth token: {:?}", auth_token);
-
-        Ok(auth_token)
     }
 
     async fn client_token_request<M: Message>(&self, message: &M) -> Result<Bytes, Error> {
@@ -563,14 +434,18 @@ impl SpClient {
             }
             headers_mut.insert(
                 AUTHORIZATION,
-                HeaderValue::from_str(&format!(
-                    "{} {}",
-                    auth_token.token_type, auth_token.access_token,
-                ))?,
+                HeaderValue::from_str(&format!("{} {}", token.token_type, token.access_token,))?,
             );
 
-            let client_token = self.client_token().await?;
-            headers_mut.insert(CLIENT_TOKEN, HeaderValue::from_str(&client_token)?);
+            match self.client_token().await {
+                Ok(client_token) => {
+                    let _ = headers_mut.insert(CLIENT_TOKEN, HeaderValue::from_str(&client_token)?);
+                }
+                Err(e) => {
+                    // currently these endpoints seem to work fine without it
+                    warn!("Unable to get client token: {e} Trying to continue without...")
+                }
+            }
 
             last_response = self.session().http_client().request_body(request).await;
 

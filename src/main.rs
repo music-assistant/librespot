@@ -221,6 +221,7 @@ struct Setup {
     zeroconf_ip: Vec<std::net::IpAddr>,
     single_track:  Option<String>,
     start_position: u32,
+    check_auth: bool,
 }
 
 fn get_setup() -> Setup {
@@ -283,6 +284,7 @@ fn get_setup() -> Setup {
     const ZEROCONF_PORT: &str = "zeroconf-port";
     const ZEROCONF_INTERFACE: &str = "zeroconf-interface";
     const SINGLE_TRACK: &str = "single-track";
+    const CHECK_AUTH: &str = "check-auth";
 
     // Mostly arbitrary.
     const AP_PORT_SHORT: &str = "a";
@@ -656,6 +658,11 @@ fn get_setup() -> Setup {
         "start-position",
         "Position (in seconds) where playback should be started. Only valid with the --single-track option.",
         "STARTPOSITION"
+    )
+    .optflag(
+        "",
+        "check-auth",
+        "Check if (oAuth) credentials are valid and exit.",
     );
 
     #[cfg(feature = "passthrough-decoder")]
@@ -1833,6 +1840,7 @@ fn get_setup() -> Setup {
         zeroconf_ip,
         single_track: matches.opt_str("single-track"),
         start_position: (start_position * 1000.0) as u32,
+        check_auth: matches.opt_present("check-auth"),
     }
 }
 
@@ -1878,9 +1886,9 @@ async fn main() {
         ).unwrap();
         track.item_type = SpotifyItemType::Track;
 
-        if let Some(last_credentials) = setup.credentials.clone() {
+        if let Some(credentials) = setup.credentials {
             info!("Connecting...");
-            if let Err(e) = session.connect(last_credentials, false).await {
+            if let Err(e) = session.connect(credentials, true).await {
                 error!("Error connecting: {}", e);
                 exit(1);
             }
@@ -1894,6 +1902,21 @@ async fn main() {
         });
         player.load(track, true, setup.start_position);
         player.await_end_of_track().await;
+        exit(0);
+    }
+
+    if setup.check_auth {
+        // Check if auth is valid + exit
+        if let Some(credentials) = setup.credentials {
+            info!("Connecting...");
+            if let Err(e) = session.connect(credentials, true).await {
+                error!("Error connecting: {}", e);
+                exit(1);
+            }
+        } else {
+            error!("No credentials provided. Authentication is not possible.");
+            exit(1);
+        }
         exit(0);
     }
 
