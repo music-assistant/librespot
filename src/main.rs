@@ -1,7 +1,3 @@
-use data_encoding::HEXLOWER;
-use futures_util::StreamExt;
-use log::{debug, error, info, trace, warn};
-use sha1::{Digest, Sha1};
 use std::{
     env,
     fs::create_dir_all,
@@ -12,17 +8,19 @@ use std::{
     str::FromStr,
     time::{Duration, Instant},
 };
-use sysinfo::{ProcessesToUpdate, System};
-use thiserror::Error;
-use url::Url;
 
+use data_encoding::HEXLOWER;
+use futures_util::StreamExt;
+#[cfg(feature = "alsa-backend")]
+use librespot::playback::mixer::alsamixer::AlsaMixer;
 use librespot::{
-    connect::{config::ConnectConfig, spirc::Spirc},
+    connect::{spirc::Spirc, state::ConnectStateConfig},
     core::{
         authentication::Credentials, cache::Cache, config::DeviceType, version, Session,
         SessionConfig,
         spotify_id::{SpotifyId, SpotifyItemType},
     },
+    discovery::DnsSdServiceBuilder,
     playback::{
         audio_backend::{self, SinkBuilder, BACKENDS},
         config::{
@@ -34,9 +32,11 @@ use librespot::{
         player::{coefficient_to_duration, duration_to_coefficient, Player},
     },
 };
-
-#[cfg(feature = "alsa-backend")]
-use librespot::playback::mixer::alsamixer::AlsaMixer;
+use log::{debug, error, info, trace, warn};
+use sha1::{Digest, Sha1};
+use sysinfo::{ProcessesToUpdate, System};
+use thiserror::Error;
+use url::Url;
 
 mod player_event_handler;
 use player_event_handler::{run_program_on_sink_events, EventHandler};
@@ -209,12 +209,11 @@ struct Setup {
     cache: Option<Cache>,
     player_config: PlayerConfig,
     session_config: SessionConfig,
-    connect_config: ConnectConfig,
+    connect_config: ConnectStateConfig,
     mixer_config: MixerConfig,
     credentials: Option<Credentials>,
     enable_oauth: bool,
     oauth_port: Option<u16>,
-    enable_discovery: bool,
     zeroconf_port: u16,
     player_event_program: Option<String>,
     emit_sink_events: bool,
@@ -222,6 +221,7 @@ struct Setup {
     single_track:  Option<String>,
     start_position: u32,
     check_auth: bool,
+    zeroconf_backend: Option<DnsSdServiceBuilder>,
 }
 
 fn get_setup() -> Setup {
@@ -285,6 +285,7 @@ fn get_setup() -> Setup {
     const ZEROCONF_INTERFACE: &str = "zeroconf-interface";
     const SINGLE_TRACK: &str = "single-track";
     const CHECK_AUTH: &str = "check-auth";
+    const ZEROCONF_BACKEND: &str = "zeroconf-backend";
 
     // Mostly arbitrary.
     const AP_PORT_SHORT: &str = "a";
@@ -335,6 +336,7 @@ fn get_setup() -> Setup {
     const NORMALISATION_RELEASE_SHORT: &str = "y";
     const NORMALISATION_THRESHOLD_SHORT: &str = "Z";
     const ZEROCONF_PORT_SHORT: &str = "z";
+    const ZEROCONF_BACKEND_SHORT: &str = ""; // no short flag
 
     // Options that have different descriptions
     // depending on what backends were enabled at build time.
@@ -663,6 +665,10 @@ fn get_setup() -> Setup {
         "",
         "check-auth",
         "Check if (oAuth) credentials are valid and exit.",
+        ZEROCONF_BACKEND_SHORT,
+        ZEROCONF_BACKEND,
+        "Zeroconf (MDNS/DNS-SD) backend to use. Valid values are 'avahi', 'dns-sd' and 'libmdns', if librespot is compiled with the corresponding feature flags.",
+        "BACKEND"
     );
 
     #[cfg(feature = "passthrough-decoder")]
@@ -828,12 +834,22 @@ fn get_setup() -> Setup {
         exit(0);
     }
 
+    // Can't use `-> fmt::Arguments` due to https://github.com/rust-lang/rust/issues/92698
+    fn format_flag(long: &str, short: &str) -> String {
+        if short.is_empty() {
+            format!("`--{long}`")
+        } else {
+            format!("`--{long}` / `-{short}`")
+        }
+    }
+
     let invalid_error_msg =
         |long: &str, short: &str, invalid: &str, valid_values: &str, default_value: &str| {
-            error!("Invalid `--{long}` / `-{short}`: \"{invalid}\"");
+            let flag = format_flag(long, short);
+            error!("Invalid {flag}: \"{invalid}\"");
 
             if !valid_values.is_empty() {
-                println!("Valid `--{long}` / `-{short}` values: {valid_values}");
+                println!("Valid {flag} values: {valid_values}");
             }
 
             if !default_value.is_empty() {
@@ -1215,6 +1231,26 @@ fn get_setup() -> Setup {
         }
     };
 
+    let no_discovery_reason = if !cfg!(any(
+        feature = "with-libmdns",
+        feature = "with-dns-sd",
+        feature = "with-avahi"
+    )) {
+        Some("librespot compiled without zeroconf backend".to_owned())
+    } else if opt_present(DISABLE_DISCOVERY) {
+        Some(format!(
+            "the `--{}` / `-{}` flag set",
+            DISABLE_DISCOVERY, DISABLE_DISCOVERY_SHORT,
+        ))
+    } else {
+        None
+    };
+
+    if credentials.is_none() && no_discovery_reason.is_some() && !enable_oauth {
+        error!("Credentials are required if discovery and oauth login are disabled.");
+        exit(1);
+    }
+
     let oauth_port = if opt_present(OAUTH_PORT) {
         if !enable_oauth {
             warn!(
@@ -1250,9 +1286,16 @@ fn get_setup() -> Setup {
             "With the `--{}` / `-{}` flag set `--{}` / `-{}` has no effect.",
             DISABLE_DISCOVERY, DISABLE_DISCOVERY_SHORT, ZEROCONF_PORT, ZEROCONF_PORT_SHORT
         );
+    if let Some(reason) = no_discovery_reason.as_deref() {
+        if opt_present(ZEROCONF_PORT) {
+            warn!(
+                "With {} `--{}` / `-{}` has no effect.",
+                reason, ZEROCONF_PORT, ZEROCONF_PORT_SHORT
+            );
+        }
     }
 
-    let zeroconf_port = if enable_discovery {
+    let zeroconf_port = if no_discovery_reason.is_none() {
         opt_str(ZEROCONF_PORT)
             .map(|port| match port.parse::<u16>() {
                 Ok(value) if value != 0 => value,
@@ -1288,6 +1331,16 @@ fn get_setup() -> Setup {
         None => SessionConfig::default().autoplay,
     };
 
+    if let Some(reason) = no_discovery_reason.as_deref() {
+        if opt_present(ZEROCONF_INTERFACE) {
+            warn!(
+                "With {} {} has no effect.",
+                reason,
+                format_flag(ZEROCONF_INTERFACE, ZEROCONF_INTERFACE_SHORT),
+            );
+        }
+    }
+
     let zeroconf_ip: Vec<std::net::IpAddr> = if opt_present(ZEROCONF_INTERFACE) {
         if let Some(zeroconf_ip) = opt_str(ZEROCONF_INTERFACE) {
             zeroconf_ip
@@ -1313,8 +1366,41 @@ fn get_setup() -> Setup {
         vec![]
     };
 
+    if let Some(reason) = no_discovery_reason.as_deref() {
+        if opt_present(ZEROCONF_BACKEND) {
+            warn!(
+                "With {} `--{}` / `-{}` has no effect.",
+                reason, ZEROCONF_BACKEND, ZEROCONF_BACKEND_SHORT
+            );
+        }
+    }
+
+    let zeroconf_backend_name = opt_str(ZEROCONF_BACKEND);
+    let zeroconf_backend = no_discovery_reason.is_none().then(|| {
+        librespot::discovery::find(zeroconf_backend_name.as_deref()).unwrap_or_else(|_| {
+            let available_backends: Vec<_> = librespot::discovery::BACKENDS
+                .iter()
+                .filter_map(|(id, launch_svc)| launch_svc.map(|_| *id))
+                .collect();
+            let default_backend = librespot::discovery::BACKENDS
+                .iter()
+                .find_map(|(id, launch_svc)| launch_svc.map(|_| *id))
+                .unwrap_or("<none>");
+
+            invalid_error_msg(
+                ZEROCONF_BACKEND,
+                ZEROCONF_BACKEND_SHORT,
+                &zeroconf_backend_name.unwrap_or_default(),
+                &available_backends.join(", "),
+                default_backend,
+            );
+
+            exit(1);
+        })
+    });
+
     let connect_config = {
-        let connect_default_config = ConnectConfig::default();
+        let connect_default_config = ConnectStateConfig::default();
 
         let name = opt_str(NAME).unwrap_or_else(|| connect_default_config.name.clone());
 
@@ -1374,14 +1460,11 @@ fn get_setup() -> Setup {
                         #[cfg(feature = "alsa-backend")]
                         let default_value = &format!(
                             "{}, or the current value when the alsa mixer is used.",
-                            connect_default_config.initial_volume.unwrap_or_default()
+                            connect_default_config.initial_volume
                         );
 
                         #[cfg(not(feature = "alsa-backend"))]
-                        let default_value = &connect_default_config
-                            .initial_volume
-                            .unwrap_or_default()
-                            .to_string();
+                        let default_value = &connect_default_config.initial_volume.to_string();
 
                         invalid_error_msg(
                             INITIAL_VOLUME,
@@ -1428,14 +1511,21 @@ fn get_setup() -> Setup {
 
         let is_group = opt_present(DEVICE_IS_GROUP);
 
-        let has_volume_ctrl = !matches!(mixer_config.volume_ctrl, VolumeCtrl::Fixed);
-
-        ConnectConfig {
-            name,
-            device_type,
-            is_group,
-            initial_volume,
-            has_volume_ctrl,
+        if let Some(initial_volume) = initial_volume {
+            ConnectStateConfig {
+                name,
+                device_type,
+                is_group,
+                initial_volume: initial_volume.into(),
+                ..Default::default()
+            }
+        } else {
+            ConnectStateConfig {
+                name,
+                device_type,
+                is_group,
+                ..Default::default()
+            }
         }
     };
 
@@ -1833,7 +1923,6 @@ fn get_setup() -> Setup {
         credentials,
         enable_oauth,
         oauth_port,
-        enable_discovery,
         zeroconf_port,
         player_event_program,
         emit_sink_events,
@@ -1841,6 +1930,7 @@ fn get_setup() -> Setup {
         single_track: matches.opt_str("single-track"),
         start_position: (start_position * 1000.0) as u32,
         check_auth: matches.opt_present("check-auth"),
+        zeroconf_backend,
     }
 }
 
@@ -1920,7 +2010,7 @@ async fn main() {
         exit(0);
     }
 
-    if setup.enable_discovery {
+    if let Some(zeroconf_backend) = setup.zeroconf_backend {
         // When started at boot as a service discovery may fail due to it
         // trying to bind to interfaces before the network is actually up.
         // This could be prevented in systemd by starting the service after
@@ -1940,11 +2030,12 @@ async fn main() {
                 .is_group(setup.connect_config.is_group)
                 .port(setup.zeroconf_port)
                 .zeroconf_ip(setup.zeroconf_ip.clone())
+                .zeroconf_backend(zeroconf_backend)
                 .launch()
             {
                 Ok(d) => break Some(d),
                 Err(e) => {
-                    sys.refresh_processes(ProcessesToUpdate::All);
+                    sys.refresh_processes(ProcessesToUpdate::All, true);
 
                     if System::uptime() <= 1 {
                         debug!("Retrying to initialise discovery: {e}");
@@ -2103,18 +2194,25 @@ async fn main() {
 
     info!("Gracefully shutting down");
 
+    let mut shutdown_tasks = tokio::task::JoinSet::new();
+
     // Shutdown spirc if necessary
     if let Some(spirc) = spirc {
         if let Err(e) = spirc.shutdown() {
             error!("error sending spirc shutdown message: {}", e);
         }
 
-        if let Some(mut spirc_task) = spirc_task {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => (),
-                _ = spirc_task.as_mut() => (),
-                else => (),
-            }
+        if let Some(spirc_task) = spirc_task {
+            shutdown_tasks.spawn(spirc_task);
         }
+    }
+
+    if let Some(discovery) = discovery {
+        shutdown_tasks.spawn(discovery.shutdown());
+    }
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => (),
+        _ = shutdown_tasks.join_all() => (),
     }
 }

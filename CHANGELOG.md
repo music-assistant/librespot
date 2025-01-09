@@ -5,22 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) since v0.2.0.
 
-## [Unreleased]
+## [Unreleased] - YYYY-MM-DD
+
+### Changed
+
+- [core] MSRV is now 1.81 (breaking)
+- [connect] Replaced `ConnectConfig` with `ConnectStateConfig` (breaking)
+- [connect] Replaced `playing_track_index` field of `SpircLoadCommand` with `playing_track` (breaking)
+- [connect] Replaced Mercury usage in `Spirc` with Dealer
+
+### Added
+
+- [connect] Add `seek_to` field to `SpircLoadCommand` (breaking)
+- [connect] Add `repeat_track` field to `SpircLoadCommand` (breaking)
+- [connect] Add `pause` parameter to `Spirc::disconnect` method (breaking)
+- [playback] Add `track` field to `PlayerEvent::RepeatChanged` (breaking)
+- [core] Add `request_with_options` and `request_with_protobuf_and_options` to `SpClient`
+
+### Fixed
+
+- [core] Fix "no native root CA certificates found" on platforms unsupported
+  by `rustls-native-certs`.
+- [core] Fix all APs rejecting with "TryAnotherAP" when connecting session
+  on Android platform.
+- [core] Fix "Invalid Credentials" when using a Keymaster access token and
+  client ID on Android platform.
+- [connect] Fix "play" command not handled if missing "offset" property
+- [discovery] Fix libmdns zerconf setup errors not propagating to the main task.
+- [metadata] `Show::trailer_uri` is now optional since it isn't always present (breaking)
+
+### Removed
+
+- [core] Removed `get_canvases` from SpClient (breaking)
+- [metadata] Removed `genres` from Album (breaking)
+- [metadata] Removed `genre` from Artists (breaking)
+
+## [0.6.0] - 2024-10-30
+
+This version takes another step into the direction of the HTTP API, fixes a
+couple of bugs, and makes it easier for developers to mock a certain platform.
+Also it adds the option to choose avahi, dnssd or libmdns as your zeroconf
+backend for Spotify Connect discovery.
 
 ### Changed
 
 - [core] The `access_token` for http requests is now acquired by `login5`
+- [core] MSRV is now 1.75 (breaking)
+- [discovery] librespot can now be compiled with multiple MDNS/DNS-SD backends
+  (avahi, dns_sd, libmdns) which can be selected using a CLI flag. The defaults
+  are unchanged (breaking).
 
 ### Added
 
+- [core] Add `get_token_with_client_id()` to get a token for a specific client ID
 - [core] Add `login` (mobile) and `auth_token` retrieval via login5
 - [core] Add `OS` and `os_version` to `config.rs`
+- [discovery] Added a new MDNS/DNS-SD backend which connects to Avahi via D-Bus.
 
-### Removed
-
-### Fixed 
+### Fixed
 
 - [connect] Fixes initial volume showing zero despite playing in full volume instead
+- [core] Fix "source slice length (16) does not match destination slice length
+  (20)" panic on some tracks
 
 ## [0.5.0] - 2024-10-15
 
@@ -311,7 +357,8 @@ v0.4.x as a stable branch until then.
 
 ## [0.1.0] - 2019-11-06
 
-[unreleased]: https://github.com/librespot-org/librespot/compare/v0.5.0...HEAD
+[unreleased]: https://github.com/librespot-org/librespot/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/librespot-org/librespot/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/librespot-org/librespot/compare/v0.4.2...v0.5.0
 [0.4.2]: https://github.com/librespot-org/librespot/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/librespot-org/librespot/compare/v0.4.0...v0.4.1

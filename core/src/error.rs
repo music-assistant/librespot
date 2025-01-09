@@ -21,9 +21,6 @@ use url::ParseError;
 
 use librespot_oauth::OAuthError;
 
-#[cfg(feature = "with-dns-sd")]
-use dns_sd::DNSError;
-
 #[derive(Debug)]
 pub struct Error {
     pub kind: ErrorKind,
@@ -314,13 +311,6 @@ impl From<DecodeError> for Error {
     }
 }
 
-#[cfg(feature = "with-dns-sd")]
-impl From<DNSError> for Error {
-    fn from(err: DNSError) -> Self {
-        Self::new(ErrorKind::Unavailable, err)
-    }
-}
-
 impl From<http::Error> for Error {
     fn from(err: http::Error) -> Self {
         if err.is::<InvalidHeaderName>()
@@ -507,5 +497,11 @@ impl From<ToStrError> for Error {
 impl From<Utf8Error> for Error {
     fn from(err: Utf8Error) -> Self {
         Self::new(ErrorKind::FailedPrecondition, err)
+    }
+}
+
+impl From<protobuf_json_mapping::ParseError> for Error {
+    fn from(err: protobuf_json_mapping::ParseError) -> Self {
+        Self::failed_precondition(err)
     }
 }
