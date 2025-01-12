@@ -665,10 +665,11 @@ fn get_setup() -> Setup {
         "",
         "check-auth",
         "Check if (oAuth) credentials are valid and exit.",
+    )
+    .optflag(
         ZEROCONF_BACKEND_SHORT,
         ZEROCONF_BACKEND,
         "Zeroconf (MDNS/DNS-SD) backend to use. Valid values are 'avahi', 'dns-sd' and 'libmdns', if librespot is compiled with the corresponding feature flags.",
-        "BACKEND"
     );
 
     #[cfg(feature = "passthrough-decoder")]
@@ -1286,6 +1287,7 @@ fn get_setup() -> Setup {
             "With the `--{}` / `-{}` flag set `--{}` / `-{}` has no effect.",
             DISABLE_DISCOVERY, DISABLE_DISCOVERY_SHORT, ZEROCONF_PORT, ZEROCONF_PORT_SHORT
         );
+    }
     if let Some(reason) = no_discovery_reason.as_deref() {
         if opt_present(ZEROCONF_PORT) {
             warn!(

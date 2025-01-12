@@ -1,14 +1,14 @@
 [package]
-name = "librespot"
-version = "0.6.0-dev"
-rust-version = "1.81"
 authors = ["Librespot Org"]
-license = "MIT"
 description = "An open source client library for Spotify, with support for Spotify Connect"
-keywords = ["spotify"]
-repository = "https://github.com/librespot-org/librespot"
-readme = "README.md"
 edition = "2021"
+keywords = ["spotify"]
+license = "MIT"
+name = "librespot"
+readme = "README.md"
+repository = "https://github.com/librespot-org/librespot"
+rust-version = "1.81"
+version = "0.6.0-dev"
 
 [workspace]
 
@@ -17,9 +17,9 @@ name = "librespot"
 path = "src/lib.rs"
 
 [[bin]]
+doc = false
 name = "librespot"
 path = "src/main.rs"
-doc = false
 
 [dependencies.librespot-audio]
 path = "audio"
@@ -34,9 +34,9 @@ path = "core"
 version = "0.6.0-dev"
 
 [dependencies.librespot-discovery]
+default-features = false
 path = "discovery"
 version = "0.6.0-dev"
-default-features = false
 
 [dependencies.librespot-metadata]
 path = "metadata"
@@ -56,25 +56,25 @@ version = "0.6.0-dev"
 
 [dependencies]
 data-encoding = "2.5"
-env_logger =  { version = "0.11.2", default-features = false, features = ["color", "humantime", "auto-color"] }
-futures-util = { version = "0.3", default-features = false }
+env_logger = {version = "0.11.2", default-features = false, features = ["color", "humantime", "auto-color"]}
+futures-util = {version = "0.3", default-features = false}
 getopts = "0.2"
 log = "0.4"
 sha1 = "0.10"
-sysinfo = { version = "0.33.0", default-features = false, features = ["system"] }
+sysinfo = {version = "0.33.0", default-features = false, features = ["system"]}
 thiserror = "2.0"
-tokio = { version = "1.40", features = ["rt", "macros", "signal", "sync", "parking_lot", "process"] }
+tokio = {version = "1.40", features = ["rt", "macros", "signal", "sync", "parking_lot", "process"]}
 url = "2.2"
 
 [features]
 alsa-backend = ["librespot-playback/alsa-backend"]
+gstreamer-backend = ["librespot-playback/gstreamer-backend"]
+jackaudio-backend = ["librespot-playback/jackaudio-backend"]
 portaudio-backend = ["librespot-playback/portaudio-backend"]
 pulseaudio-backend = ["librespot-playback/pulseaudio-backend"]
-jackaudio-backend = ["librespot-playback/jackaudio-backend"]
 rodio-backend = ["librespot-playback/rodio-backend"]
 rodiojack-backend = ["librespot-playback/rodiojack-backend"]
 sdl-backend = ["librespot-playback/sdl-backend"]
-gstreamer-backend = ["librespot-playback/gstreamer-backend"]
 
 with-avahi = ["librespot-discovery/with-avahi"]
 with-dns-sd = ["librespot-discovery/with-dns-sd"]
@@ -82,25 +82,25 @@ with-libmdns = ["librespot-discovery/with-libmdns"]
 
 passthrough-decoder = ["librespot-playback/passthrough-decoder"]
 
-default = ["rodio-backend", "with-libmdns"]
+default = ["rodio-backend", "with-libmdns", "passthrough-decoder"]
 
 [package.metadata.deb]
-maintainer = "librespot-org"
+assets = [
+  ["target/release/librespot", "usr/bin/", "755"],
+  ["contrib/librespot.service", "lib/systemd/system/", "644"],
+  ["contrib/librespot.user.service", "lib/systemd/user/", "644"],
+]
 copyright = "2018 Paul Liétar"
-license-file = ["LICENSE", "4"]
 depends = "$auto"
 extended-description = """\
 librespot is an open source client library for Spotify. It enables applications \
 to use Spotify's service, without using the official but closed-source \
 libspotify. Additionally, it will provide extra features which are not \
 available in the official library."""
-section = "sound"
+license-file = ["LICENSE", "4"]
+maintainer = "librespot-org"
 priority = "optional"
-assets = [
-    ["target/release/librespot", "usr/bin/", "755"],
-    ["contrib/librespot.service", "lib/systemd/system/", "644"],
-    ["contrib/librespot.user.service", "lib/systemd/user/", "644"]
-]
+section = "sound"
 
 [workspace.package]
 rust-version = "1.81"
