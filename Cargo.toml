@@ -82,7 +82,7 @@ with-libmdns = ["librespot-discovery/with-libmdns"]
 
 passthrough-decoder = ["librespot-playback/passthrough-decoder"]
 
-default = ["rodio-backend", "with-libmdns", "passthrough-decoder"]
+default = ["with-libmdns", "passthrough-decoder"]
 
 [package.metadata.deb]
 assets = [
