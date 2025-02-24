@@ -9,39 +9,39 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  macos:
-    runs-on: macos-11.0
+  # macos:
+  #   runs-on: macos-11.0
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v3
 
-      - name: Install Rust support for ARM64 & prepare environment
-        run: |
-          rustup target add aarch64-apple-darwin
-          mkdir releases
+  #     - name: Install Rust support for ARM64 & prepare environment
+  #       run: |
+  #         rustup target add aarch64-apple-darwin
+  #         mkdir releases
 
-      - name: Build
-        run: |
-          cargo build --release
-          cargo build --target=aarch64-apple-darwin --release
+  #     - name: Build
+  #       run: |
+  #         cargo build --release
+  #         cargo build --target=aarch64-apple-darwin --release
 
-      - name: Build fat binary
-        run: |
-          lipo -create \
-            -arch x86_64 target/release/librespot \
-            -arch arm64 target/aarch64-apple-darwin/release/librespot \
-            -output releases/librespot-macos-arm64
-          chmod +x releases/librespot-macos-arm64
+  #     - name: Build fat binary
+  #       run: |
+  #         lipo -create \
+  #           -arch x86_64 target/release/librespot \
+  #           -arch arm64 target/aarch64-apple-darwin/release/librespot \
+  #           -output releases/librespot-macos-arm64
+  #         chmod +x releases/librespot-macos-arm64
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: librespot-mac
-          path: releases/
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: librespot-mac
+  #         path: releases/
 
   linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -73,7 +73,7 @@ jobs:
           path: releases/
 
   linux-musl:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -90,7 +90,7 @@ jobs:
         uses: awalsh128/cache-apt-pkgs-action@v1
         with:
           packages: "musl-tools"
-          version: "1.0"
+          version: "1.1"
 
       - name: Build x86_64
         run: |
