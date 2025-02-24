@@ -95,13 +95,13 @@ jobs:
       - name: Build x86_64
         run: |
           cargo build --release --target=x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-x86_64
+          cp target/x86_64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-musl-x86_64
           chmod +x releases/linux/librespot-linux-musl-x86_64
 
       - name: Build ARMv8
         run: |
           ./cross build --release --target=aarch64-unknown-linux-musl
-          cp target/aarch64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-aarch64
+          cp target/aarch64-unknown-linux-musl/release/librespot releases/linux/librespot-linux-musl-aarch64
           chmod +x releases/linux/librespot-linux-musl-aarch64
 
       - name: Upload artifacts
