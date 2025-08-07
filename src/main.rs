@@ -1971,13 +1971,12 @@ async fn main() {
     if let Some(ref track_id) = setup.single_track {
         // Handle playback of single track + exit
 
-        let mut track = SpotifyId::from_uri(
+        let track = SpotifyId::from_uri(
             track_id
                 .replace("spotty://", "spotify:track:")
                 .replace("://", ":")
                 .as_str(),
         ).unwrap();
-        track.item_type = SpotifyItemType::Track;
 
         if let Some(credentials) = setup.credentials {
             info!("Connecting...");
