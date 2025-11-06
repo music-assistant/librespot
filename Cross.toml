@@ -10,3 +10,15 @@ pre-build = [
 # Building with --no-default-features --features rustls-tls
 # No pre-build steps required - rustls is pure Rust
 pre-build = []
+
+[target.x86_64-unknown-linux-musl]
+# musl: Uses rustls-tls (native-tls doesn't work well with musl)
+# Building with --no-default-features --features rustls-tls-native-roots
+# No pre-build steps required - rustls is pure Rust
+pre-build = []
+
+[target.aarch64-unknown-linux-musl]
+# musl: Uses rustls-tls (native-tls doesn't work well with musl)
+# Building with --no-default-features --features rustls-tls-native-roots
+# No pre-build steps required - rustls is pure Rust
+pre-build = []
