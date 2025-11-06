@@ -8,10 +8,10 @@
 # The compiled binaries will be located in /tmp/librespot-build
 #
 # If only one architecture is desired, cargo can be invoked directly with the appropriate options :
-# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --no-default-features --features "alsa-backend with-libmdns"
-# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target arm-unknown-linux-gnueabihf --no-default-features --features "alsa-backend with-libmdns"
-# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target arm-unknown-linux-gnueabi --no-default-features --features "alsa-backend with-libmdns"
-# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target aarch64-unknown-linux-gnu --no-default-features --features "alsa-backend with-libmdns"
+# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --no-default-features --features "alsa-backend with-libmdns rustls-tls-native-roots"
+# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target arm-unknown-linux-gnueabihf --no-default-features --features "alsa-backend with-libmdns rustls-tls-native-roots"
+# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target arm-unknown-linux-gnueabi --no-default-features --features "alsa-backend with-libmdns rustls-tls-native-roots"
+# $ docker run -v /tmp/librespot-build:/build librespot-cross cargo build --release --target aarch64-unknown-linux-gnu --no-default-features --features "alsa-backend with-libmdns rustls-tls-native-roots"
 
 FROM debian:bookworm
 
@@ -40,10 +40,10 @@ RUN dpkg --add-architecture arm64 && \
 	libpulse0:arm64 \
 	libpulse0:armel \
 	libpulse0:armhf \
-	pkg-config 
+	pkg-config
 
 ENV PATH="/root/.cargo/bin/:${PATH}"
-RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.81 -y && \
+RUN curl https://sh.rustup.rs -sSf | sh -s -- --default-toolchain 1.85 -y && \
 	rustup target add aarch64-unknown-linux-gnu && \
 	rustup target add arm-unknown-linux-gnueabi && \
 	rustup target add arm-unknown-linux-gnueabihf && \
