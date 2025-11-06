@@ -4,13 +4,14 @@ use std::{
     io,
     pin::Pin,
     process::exit,
-    sync::{Arc, Weak},
+    sync::{Arc, OnceLock, RwLock, Weak},
     task::{Context, Poll},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::dealer::manager::DealerManager;
 use crate::{
+    Error,
     apresolve::{ApResolver, SocketAddress},
     audio_key::AudioKeyManager,
     authentication::Credentials,
@@ -25,7 +26,6 @@ use crate::{
     protocol::keyexchange::ErrorCode,
     spclient::SpClient,
     token::TokenProvider,
-    Error,
 };
 use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
@@ -33,17 +33,17 @@ use futures_core::TryStream;
 use futures_util::StreamExt;
 use librespot_protocol::authentication::AuthenticationType;
 use num_traits::FromPrimitive;
-use once_cell::sync::OnceCell;
-use parking_lot::RwLock;
 use pin_project_lite::pin_project;
 use quick_xml::events::Event;
 use thiserror::Error;
 use tokio::{
     sync::mpsc,
-    time::{sleep, Duration as TokioDuration, Instant as TokioInstant, Sleep},
+    time::{Duration as TokioDuration, Instant as TokioInstant, Sleep, sleep},
 };
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use uuid::Uuid;
+
+const SESSION_DATA_POISON_MSG: &str = "session data rwlock should not be poisoned";
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -65,6 +65,12 @@ impl From<SessionError> for Error {
             SessionError::NotConnected => Error::unavailable(err),
             SessionError::Packet(_) => Error::unimplemented(err),
         }
+    }
+}
+
+impl From<quick_xml::encoding::EncodingError> for Error {
+    fn from(err: quick_xml::encoding::EncodingError) -> Self {
+        Error::invalid_argument(err)
     }
 }
 
@@ -96,16 +102,16 @@ struct SessionInternal {
     data: RwLock<SessionData>,
 
     http_client: HttpClient,
-    tx_connection: OnceCell<mpsc::UnboundedSender<(u8, Vec<u8>)>>,
+    tx_connection: OnceLock<mpsc::UnboundedSender<(u8, Vec<u8>)>>,
 
-    apresolver: OnceCell<ApResolver>,
-    audio_key: OnceCell<AudioKeyManager>,
-    channel: OnceCell<ChannelManager>,
-    mercury: OnceCell<MercuryManager>,
-    dealer: OnceCell<DealerManager>,
-    spclient: OnceCell<SpClient>,
-    token_provider: OnceCell<TokenProvider>,
-    login5: OnceCell<Login5Manager>,
+    apresolver: OnceLock<ApResolver>,
+    audio_key: OnceLock<AudioKeyManager>,
+    channel: OnceLock<ChannelManager>,
+    mercury: OnceLock<MercuryManager>,
+    dealer: OnceLock<DealerManager>,
+    spclient: OnceLock<SpClient>,
+    token_provider: OnceLock<TokenProvider>,
+    login5: OnceLock<Login5Manager>,
     cache: Option<Arc<Cache>>,
 
     handle: tokio::runtime::Handle,
@@ -140,16 +146,16 @@ impl Session {
             config,
             data: RwLock::new(session_data),
             http_client,
-            tx_connection: OnceCell::new(),
+            tx_connection: OnceLock::new(),
             cache: cache.map(Arc::new),
-            apresolver: OnceCell::new(),
-            audio_key: OnceCell::new(),
-            channel: OnceCell::new(),
-            mercury: OnceCell::new(),
-            dealer: OnceCell::new(),
-            spclient: OnceCell::new(),
-            token_provider: OnceCell::new(),
-            login5: OnceCell::new(),
+            apresolver: OnceLock::new(),
+            audio_key: OnceLock::new(),
+            channel: OnceLock::new(),
+            mercury: OnceLock::new(),
+            dealer: OnceLock::new(),
+            spclient: OnceLock::new(),
+            token_provider: OnceLock::new(),
+            login5: OnceLock::new(),
             handle: tokio::runtime::Handle::current(),
         }))
     }
@@ -267,7 +273,7 @@ impl Session {
         let session_weak = self.weak();
         tokio::spawn(async move {
             if let Err(e) = sender_task.await {
-                error!("{}", e);
+                error!("{e}");
                 if let Some(session) = session_weak.try_upgrade() {
                     if !session.is_invalid() {
                         session.shutdown();
@@ -332,7 +338,11 @@ impl Session {
     }
 
     pub fn time_delta(&self) -> i64 {
-        self.0.data.read().time_delta
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .time_delta
     }
 
     pub fn spawn<T>(&self, task: T)
@@ -354,7 +364,7 @@ impl Session {
     fn check_catalogue(attributes: &UserAttributes) {
         if let Some(account_type) = attributes.get("type") {
             if account_type != "premium" {
-                error!("librespot does not support {:?} accounts.", account_type);
+                error!("librespot does not support {account_type:?} accounts.");
                 info!("Please support Spotify and your artists and sign up for a premium account.");
 
                 // TODO: logout instead of exiting
@@ -382,15 +392,32 @@ impl Session {
     // you need more fields at once, in which case this can spare multiple `read`
     // locks.
     pub fn user_data(&self) -> UserData {
-        self.0.data.read().user_data.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .user_data
+            .clone()
     }
 
     pub fn session_id(&self) -> String {
-        self.0.data.read().session_id.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .session_id
+            .clone()
     }
 
     pub fn set_session_id(&self, session_id: &str) {
-        session_id.clone_into(&mut self.0.data.write().session_id);
+        session_id.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .session_id,
+        );
     }
 
     pub fn device_id(&self) -> &str {
@@ -398,63 +425,155 @@ impl Session {
     }
 
     pub fn client_id(&self) -> String {
-        self.0.data.read().client_id.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .client_id
+            .clone()
     }
 
     pub fn set_client_id(&self, client_id: &str) {
-        client_id.clone_into(&mut self.0.data.write().client_id);
+        client_id.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .client_id,
+        );
     }
 
     pub fn client_name(&self) -> String {
-        self.0.data.read().client_name.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .client_name
+            .clone()
     }
 
     pub fn set_client_name(&self, client_name: &str) {
-        client_name.clone_into(&mut self.0.data.write().client_name);
+        client_name.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .client_name,
+        );
     }
 
     pub fn client_brand_name(&self) -> String {
-        self.0.data.read().client_brand_name.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .client_brand_name
+            .clone()
     }
 
     pub fn set_client_brand_name(&self, client_brand_name: &str) {
-        client_brand_name.clone_into(&mut self.0.data.write().client_brand_name);
+        client_brand_name.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .client_brand_name,
+        );
     }
 
     pub fn client_model_name(&self) -> String {
-        self.0.data.read().client_model_name.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .client_model_name
+            .clone()
     }
 
     pub fn set_client_model_name(&self, client_model_name: &str) {
-        client_model_name.clone_into(&mut self.0.data.write().client_model_name);
+        client_model_name.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .client_model_name,
+        );
     }
 
     pub fn connection_id(&self) -> String {
-        self.0.data.read().connection_id.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .connection_id
+            .clone()
     }
 
     pub fn set_connection_id(&self, connection_id: &str) {
-        connection_id.clone_into(&mut self.0.data.write().connection_id);
+        connection_id.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .connection_id,
+        );
     }
 
     pub fn username(&self) -> String {
-        self.0.data.read().user_data.canonical_username.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .user_data
+            .canonical_username
+            .clone()
     }
 
     pub fn set_username(&self, username: &str) {
-        username.clone_into(&mut self.0.data.write().user_data.canonical_username);
+        username.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .user_data
+                .canonical_username,
+        );
     }
 
     pub fn auth_data(&self) -> Vec<u8> {
-        self.0.data.read().auth_data.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .auth_data
+            .clone()
     }
 
     pub fn set_auth_data(&self, auth_data: &[u8]) {
-        auth_data.clone_into(&mut self.0.data.write().auth_data);
+        auth_data.clone_into(
+            &mut self
+                .0
+                .data
+                .write()
+                .expect(SESSION_DATA_POISON_MSG)
+                .auth_data,
+        );
     }
 
     pub fn country(&self) -> String {
-        self.0.data.read().user_data.country.clone()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .user_data
+            .country
+            .clone()
     }
 
     pub fn filter_explicit_content(&self) -> bool {
@@ -483,6 +602,7 @@ impl Session {
         self.0
             .data
             .write()
+            .expect(SESSION_DATA_POISON_MSG)
             .user_data
             .attributes
             .insert(key.to_owned(), value.to_owned())
@@ -491,11 +611,24 @@ impl Session {
     pub fn set_user_attributes(&self, attributes: UserAttributes) {
         Self::check_catalogue(&attributes);
 
-        self.0.data.write().user_data.attributes.extend(attributes)
+        self.0
+            .data
+            .write()
+            .expect(SESSION_DATA_POISON_MSG)
+            .user_data
+            .attributes
+            .extend(attributes)
     }
 
     pub fn get_user_attribute(&self, key: &str) -> Option<String> {
-        self.0.data.read().user_data.attributes.get(key).cloned()
+        self.0
+            .data
+            .read()
+            .expect(SESSION_DATA_POISON_MSG)
+            .user_data
+            .attributes
+            .get(key)
+            .cloned()
     }
 
     fn weak(&self) -> SessionWeak {
@@ -504,13 +637,13 @@ impl Session {
 
     pub fn shutdown(&self) {
         debug!("Shutdown: Invalidating session");
-        self.0.data.write().invalid = true;
+        self.0.data.write().expect(SESSION_DATA_POISON_MSG).invalid = true;
         self.mercury().shutdown();
         self.channel().shutdown();
     }
 
     pub fn is_invalid(&self) -> bool {
-        self.0.data.read().invalid
+        self.0.data.read().expect(SESSION_DATA_POISON_MSG).invalid
     }
 }
 
@@ -560,7 +693,7 @@ impl KeepAliveState {
             .map(|t| t.as_secs_f64())
             .unwrap_or(f64::INFINITY);
 
-        trace!("keep-alive state: {:?}, timeout in {:.1}", self, delay);
+        trace!("keep-alive state: {self:?}, timeout in {delay:.1}");
     }
 }
 
@@ -613,7 +746,7 @@ where
         let cmd = match packet_type {
             Some(cmd) => cmd,
             None => {
-                trace!("Ignoring unknown packet {:x}", cmd);
+                trace!("Ignoring unknown packet {cmd:x}");
                 return Err(SessionError::Packet(cmd).into());
             }
         };
@@ -637,7 +770,7 @@ where
                     .unwrap_or(Duration::ZERO)
                     .as_secs() as i64;
                 {
-                    let mut data = session.0.data.write();
+                    let mut data = session.0.data.write().expect(SESSION_DATA_POISON_MSG);
                     data.time_delta = server_timestamp.saturating_sub(timestamp);
                 }
 
@@ -661,8 +794,14 @@ where
             }
             Some(CountryCode) => {
                 let country = String::from_utf8(data.as_ref().to_owned())?;
-                info!("Country: {:?}", country);
-                session.0.data.write().user_data.country = country;
+                info!("Country: {country:?}");
+                session
+                    .0
+                    .data
+                    .write()
+                    .expect(SESSION_DATA_POISON_MSG)
+                    .user_data
+                    .country = country;
                 Ok(())
             }
             Some(StreamChunkRes) | Some(ChannelError) => session.channel().dispatch(cmd, data),
@@ -688,8 +827,10 @@ where
                         }
                         Ok(Event::Text(ref value)) => {
                             if !current_element.is_empty() {
-                                let _ = user_attributes
-                                    .insert(current_element.clone(), value.unescape()?.to_string());
+                                let _ = user_attributes.insert(
+                                    current_element.clone(),
+                                    value.xml_content()?.to_string(),
+                                );
                             }
                         }
                         Ok(Event::Eof) => break,
@@ -702,10 +843,16 @@ where
                     }
                 }
 
-                trace!("Received product info: {:#?}", user_attributes);
+                trace!("Received product info: {user_attributes:#?}");
                 Session::check_catalogue(&user_attributes);
 
-                session.0.data.write().user_data.attributes = user_attributes;
+                session
+                    .0
+                    .data
+                    .write()
+                    .expect(SESSION_DATA_POISON_MSG)
+                    .user_data
+                    .attributes = user_attributes;
                 Ok(())
             }
             Some(SecretBlock)
@@ -713,7 +860,7 @@ where
             | Some(UnknownDataAllZeros)
             | Some(LicenseVersion) => Ok(()),
             _ => {
-                trace!("Ignoring {:?} packet with data {:#?}", cmd, data);
+                trace!("Ignoring {cmd:?} packet with data {data:#?}");
                 Err(SessionError::Packet(cmd as u8).into())
             }
         }
@@ -741,7 +888,7 @@ where
                 Poll::Ready(Some(Ok((cmd, data)))) => {
                     let result = self.as_mut().dispatch(&session, cmd, data);
                     if let Err(e) = result {
-                        debug!("could not dispatch command: {}", e);
+                        debug!("could not dispatch command: {e}");
                     }
                 }
                 Poll::Ready(None) => {

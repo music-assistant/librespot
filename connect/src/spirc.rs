@@ -1,13 +1,14 @@
 use crate::{
+    LoadContextOptions, LoadRequestOptions, PlayContext,
     context_resolver::{ContextAction, ContextResolver, ResolveContext},
     core::{
+        Error, Session, SpotifyUri,
         authentication::Credentials,
         dealer::{
             manager::{BoxedStream, BoxedStreamResult, Reply, RequestReply},
             protocol::{Command, FallbackWrapper, Message, Request},
         },
         session::UserAttributes,
-        Error, Session, SpotifyId,
     },
     model::{LoadRequest, PlayingTrack, SpircPlayStatus},
     playback::{
@@ -28,15 +29,14 @@ use crate::{
         provider::IsProvider,
         {ConnectConfig, ConnectState},
     },
-    LoadContextOptions, LoadRequestOptions, PlayContext,
 };
 use futures_util::StreamExt;
 use librespot_protocol::context_page::ContextPage;
 use protobuf::MessageField;
 use std::{
     future::Future,
-    sync::atomic::{AtomicUsize, Ordering},
     sync::Arc,
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
@@ -166,7 +166,7 @@ impl Spirc {
         }
 
         let spirc_id = SPIRC_COUNTER.fetch_add(1, Ordering::AcqRel);
-        debug!("new Spirc[{}]", spirc_id);
+        debug!("new Spirc[{spirc_id}]");
 
         let connect_state = ConnectState::new(config, &session);
 
@@ -446,14 +446,14 @@ impl SpircTask {
                 cluster_update = self.connect_state_update.next() => unwrap! {
                     cluster_update,
                     match |cluster_update| if let Err(e) = self.handle_cluster_update(cluster_update).await {
-                        error!("could not dispatch connect state update: {}", e);
+                        error!("could not dispatch connect state update: {e}");
                     }
                 },
                 // main dealer request handling (dealer expects an answer)
                 request = self.connect_state_command.next() => unwrap! {
                     request,
                     |request| if let Err(e) = self.handle_connect_state_request(request).await {
-                        error!("couldn't handle connect state command: {}", e);
+                        error!("couldn't handle connect state command: {e}");
                     }
                 },
                 // volume request handling is send separately (it's more like a fire forget)
@@ -491,12 +491,12 @@ impl SpircTask {
                 },
                 cmd = async { commands?.recv().await }, if commands.is_some() => if let Some(cmd) = cmd {
                     if let Err(e) = self.handle_command(cmd).await {
-                        debug!("could not dispatch command: {}", e);
+                        debug!("could not dispatch command: {e}");
                     }
                 },
                 event = async { player_events?.recv().await }, if player_events.is_some() => if let Some(event) = event {
                     if let Err(e) = self.handle_player_event(event) {
-                        error!("could not dispatch player event: {}", e);
+                        error!("could not dispatch player event: {e}");
                     }
                 },
                 _ = async { sleep(UPDATE_STATE_DELAY).await }, if self.update_state => {
@@ -552,6 +552,11 @@ impl SpircTask {
             }
         }
 
+        // this should clear the active session id, leaving an empty state
+        if let Err(why) = self.session.spclient().delete_connect_state_request().await {
+            error!("error during connect state deletion: {why}")
+        };
+
         self.session.dealer().close().await;
     }
 
@@ -606,7 +611,7 @@ impl SpircTask {
     }
 
     async fn handle_command(&mut self, cmd: SpircCommand) -> Result<(), Error> {
-        trace!("Received SpircCommand::{:?}", cmd);
+        trace!("Received SpircCommand::{cmd:?}");
         match cmd {
             SpircCommand::Shutdown => {
                 trace!("Received SpircCommand::Shutdown");
@@ -618,16 +623,15 @@ impl SpircTask {
                 }
             }
             SpircCommand::Activate if !self.connect_state.is_active() => {
-                trace!("Received SpircCommand::{:?}", cmd);
+                trace!("Received SpircCommand::{cmd:?}");
                 self.handle_activate();
                 return self.notify().await;
             }
-            SpircCommand::Activate => warn!(
-                "SpircCommand::{:?} will be ignored while already active",
-                cmd
-            ),
+            SpircCommand::Activate => {
+                warn!("SpircCommand::{cmd:?} will be ignored while already active")
+            }
             _ if !self.connect_state.is_active() => {
-                warn!("SpircCommand::{:?} will be ignored while Not Active", cmd)
+                warn!("SpircCommand::{cmd:?} will be ignored while Not Active")
             }
             SpircCommand::Disconnect { pause } => {
                 if pause {
@@ -774,7 +778,7 @@ impl SpircTask {
                 return Ok(());
             }
             PlayerEvent::Unavailable { track_id, .. } => {
-                self.handle_unavailable(track_id)?;
+                self.handle_unavailable(&track_id)?;
                 if self.connect_state.current_track(|t| &t.uri) == &track_id.to_uri()? {
                     self.handle_next(None)?
                 }
@@ -787,7 +791,7 @@ impl SpircTask {
     }
 
     async fn handle_connection_id_update(&mut self, connection_id: String) -> Result<(), Error> {
-        trace!("Received connection ID update: {:?}", connection_id);
+        trace!("Received connection ID update: {connection_id:?}");
         self.session.set_connection_id(&connection_id);
 
         let cluster = match self
@@ -837,7 +841,7 @@ impl SpircTask {
     }
 
     fn handle_user_attributes_update(&mut self, update: UserAttributesUpdate) {
-        trace!("Received attributes update: {:#?}", update);
+        trace!("Received attributes update: {update:#?}");
         let attributes: UserAttributes = update
             .pairs
             .iter()
@@ -863,12 +867,7 @@ impl SpircTask {
                 };
                 self.session.set_user_attribute(key, new_value);
 
-                trace!(
-                    "Received attribute mutation, {} was {} is now {}",
-                    key,
-                    old_value,
-                    new_value
-                );
+                trace!("Received attribute mutation, {key} was {old_value} is now {new_value}");
 
                 if key == "filter-explicit-content" && new_value == "1" {
                     self.player
@@ -882,10 +881,7 @@ impl SpircTask {
                     self.add_autoplay_resolving_when_required()
                 }
             } else {
-                trace!(
-                    "Received attribute mutation for {} but key was not found!",
-                    key
-                );
+                trace!("Received attribute mutation for {key} but key was not found!");
             }
         }
     }
@@ -907,8 +903,8 @@ impl SpircTask {
                 && cluster.active_device_id != self.session.device_id();
             if became_inactive {
                 info!("device became inactive");
-                self.connect_state.became_inactive(&self.session).await?;
-                self.handle_stop()
+                self.handle_disconnect().await?;
+                self.handle_stop();
             } else if self.connect_state.is_active() {
                 // fixme: workaround fix, because of missing information why it behaves like it does
                 //  background: when another device sends a connect-state update, some player's position de-syncs
@@ -960,7 +956,8 @@ impl SpircTask {
                 {
                     debug!(
                         "ignoring context update for <{:?}>, because it isn't the current context <{}>",
-                        update_context.context.uri, self.connect_state.context_uri()
+                        update_context.context.uri,
+                        self.connect_state.context_uri()
                     )
                 } else {
                     self.context_resolver.add(ResolveContext::from_context(
@@ -1110,10 +1107,10 @@ impl SpircTask {
             ContextAction::Replace,
         ));
 
+        self.handle_activate();
+
         let timestamp = self.now_ms();
         let state = &mut self.connect_state;
-
-        state.set_active(true);
         state.handle_initial_transfer(&mut transfer);
 
         // adjust active context, so resolve knows for which context it should set up the state
@@ -1170,12 +1167,6 @@ impl SpircTask {
         self.notify().await?;
 
         self.connect_state.became_inactive(&self.session).await?;
-
-        // this should clear the active session id, leaving an empty state
-        self.session
-            .spclient()
-            .delete_connect_state_request()
-            .await?;
 
         self.player
             .emit_session_disconnected_event(self.session.connection_id(), self.session.username());
@@ -1296,7 +1287,7 @@ impl SpircTask {
             if self.context_resolver.has_next() {
                 self.connect_state.update_queue_revision()
             } else {
-                self.connect_state.shuffle(None)?;
+                self.connect_state.shuffle_new()?;
                 self.add_autoplay_resolving_when_required();
             }
         } else {
@@ -1508,7 +1499,7 @@ impl SpircTask {
     }
 
     // Mark unavailable tracks so we can skip them later
-    fn handle_unavailable(&mut self, track_id: SpotifyId) -> Result<(), Error> {
+    fn handle_unavailable(&mut self, track_id: &SpotifyUri) -> Result<(), Error> {
         self.connect_state.mark_unavailable(track_id)?;
         self.handle_preload_next_track();
 
@@ -1624,7 +1615,9 @@ impl SpircTask {
         let uri = String::from_utf8(uri)?;
 
         if self.connect_state.context_uri() != &uri {
-            debug!("ignoring playlist modification update for playlist <{uri}>, because it isn't the current context");
+            debug!(
+                "ignoring playlist modification update for playlist <{uri}>, because it isn't the current context"
+            );
             return Ok(());
         }
 
@@ -1711,7 +1704,7 @@ impl SpircTask {
         }
 
         let current_uri = self.connect_state.current_track(|t| &t.uri);
-        let id = SpotifyId::from_uri(current_uri)?;
+        let id = SpotifyUri::from_uri(current_uri)?;
         self.player.load(id, start_playing, position_ms);
 
         self.connect_state
@@ -1743,7 +1736,7 @@ impl SpircTask {
     }
 
     fn set_volume(&mut self, volume: u16) {
-        debug!("SpircTask::set_volume({})", volume);
+        debug!("SpircTask::set_volume({volume})");
 
         let old_volume = self.connect_state.device_info().volume;
         let new_volume = volume as u32;

@@ -6,22 +6,21 @@ use std::{
     iter,
     pin::Pin,
     sync::{
+        Arc, Mutex,
         atomic::{self, AtomicBool},
-        Arc,
     },
     task::Poll,
     time::Duration,
 };
 
 use futures_core::{Future, Stream};
-use futures_util::{future::join_all, SinkExt, StreamExt};
-use parking_lot::Mutex;
+use futures_util::{SinkExt, StreamExt, future::join_all};
 use thiserror::Error;
 use tokio::{
     select,
     sync::{
-        mpsc::{self, UnboundedReceiver},
         Semaphore,
+        mpsc::{self, UnboundedReceiver},
     },
     task::JoinHandle,
 };
@@ -35,9 +34,8 @@ use self::{
 };
 
 use crate::{
-    socket,
-    util::{keep_flushing, CancelOnDrop, TimeoutOnDrop},
-    Error,
+    Error, socket,
+    util::{CancelOnDrop, TimeoutOnDrop, keep_flushing},
 };
 
 type WsMessage = tungstenite::Message;
@@ -57,6 +55,11 @@ const PING_INTERVAL: Duration = Duration::from_secs(30);
 const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(10);
+
+const DEALER_REQUEST_HANDLERS_POISON_MSG: &str =
+    "dealer request handlers mutex should not be poisoned";
+const DEALER_MESSAGE_HANDLERS_POISON_MSG: &str =
+    "dealer message handlers mutex should not be poisoned";
 
 struct Response {
     pub success: bool,
@@ -88,8 +91,8 @@ impl Responder {
         })
         .to_string();
 
-        if let Err(e) = self.tx.send(WsMessage::Text(response)) {
-            warn!("Wasn't able to reply to dealer request: {}", e);
+        if let Err(e) = self.tx.send(WsMessage::Text(response.into())) {
+            warn!("Wasn't able to reply to dealer request: {e}");
         }
     }
 
@@ -351,6 +354,7 @@ impl DealerShared {
             if self
                 .message_handlers
                 .lock()
+                .expect(DEALER_MESSAGE_HANDLERS_POISON_MSG)
                 .retain(split, &mut |tx| tx.send(msg.clone()).is_ok())
             {
                 return;
@@ -388,7 +392,10 @@ impl DealerShared {
             return;
         };
 
-        let handler_map = self.request_handlers.lock();
+        let handler_map = self
+            .request_handlers
+            .lock()
+            .expect(DEALER_REQUEST_HANDLERS_POISON_MSG);
 
         if let Some(handler) = handler_map.get(split) {
             handler.handle_request(payload_request, responder);
@@ -426,21 +433,51 @@ impl Dealer {
     where
         H: RequestHandler,
     {
-        add_handler(&mut self.shared.request_handlers.lock(), uri, handler)
+        add_handler(
+            &mut self
+                .shared
+                .request_handlers
+                .lock()
+                .expect(DEALER_REQUEST_HANDLERS_POISON_MSG),
+            uri,
+            handler,
+        )
     }
 
     pub fn remove_handler(&self, uri: &str) -> Option<Box<dyn RequestHandler>> {
-        remove_handler(&mut self.shared.request_handlers.lock(), uri)
+        remove_handler(
+            &mut self
+                .shared
+                .request_handlers
+                .lock()
+                .expect(DEALER_REQUEST_HANDLERS_POISON_MSG),
+            uri,
+        )
     }
 
     pub fn subscribe(&self, uris: &[&str]) -> Result<Subscription, Error> {
-        subscribe(&mut self.shared.message_handlers.lock(), uris)
+        subscribe(
+            &mut self
+                .shared
+                .message_handlers
+                .lock()
+                .expect(DEALER_MESSAGE_HANDLERS_POISON_MSG),
+            uris,
+        )
     }
 
     pub fn handles(&self, uri: &str) -> bool {
         handles(
-            &self.shared.request_handlers.lock(),
-            &self.shared.message_handlers.lock(),
+            &self
+                .shared
+                .request_handlers
+                .lock()
+                .expect(DEALER_REQUEST_HANDLERS_POISON_MSG),
+            &self
+                .shared
+                .message_handlers
+                .lock()
+                .expect(DEALER_MESSAGE_HANDLERS_POISON_MSG),
             uri,
         )
     }
@@ -452,7 +489,7 @@ impl Dealer {
 
         if let Some(handle) = self.handle.take() {
             if let Err(e) = CancelOnDrop(handle).await {
-                error!("error aborting dealer operations: {}", e);
+                error!("error aborting dealer operations: {e}");
             }
         }
     }
@@ -524,13 +561,13 @@ async fn connect(
                 Ok(close_frame) => ws_tx.send(WsMessage::Close(close_frame)).await,
                 Err(WsError::AlreadyClosed) | Err(WsError::ConnectionClosed) => ws_tx.flush().await,
                 Err(e) => {
-                    warn!("Dealer finished with an error: {}", e);
+                    warn!("Dealer finished with an error: {e}");
                     ws_tx.send(WsMessage::Close(None)).await
                 }
             };
 
             if let Err(e) = result {
-                warn!("Error while closing websocket: {}", e);
+                warn!("Error while closing websocket: {e}");
             }
 
             debug!("Dropping send task");
@@ -565,7 +602,7 @@ async fn connect(
                         _ => (), // tungstenite handles Close and Ping automatically
                     },
                     Some(Err(e)) => {
-                        warn!("Websocket connection failed: {}", e);
+                        warn!("Websocket connection failed: {e}");
                         break;
                     }
                     None => {
@@ -586,7 +623,10 @@ async fn connect(
                 timer.tick().await;
 
                 pong_received.store(false, atomic::Ordering::Relaxed);
-                if send_tx.send(WsMessage::Ping(vec![])).is_err() {
+                if send_tx
+                    .send(WsMessage::Ping(bytes::Bytes::default()))
+                    .is_err()
+                {
                     // The sender is closed.
                     break;
                 }
@@ -645,13 +685,13 @@ where
                     () = shared.closed() => break,
                     r = t0 => {
                         if let Err(e) = r {
-                            error!("timeout on task 0: {}", e);
+                            error!("timeout on task 0: {e}");
                         }
                         tasks.0.take();
                     },
                     r = t1 => {
                         if let Err(e) = r {
-                            error!("timeout on task 1: {}", e);
+                            error!("timeout on task 1: {e}");
                         }
                         tasks.1.take();
                     }
@@ -668,7 +708,7 @@ where
                 match connect(&url, proxy.as_ref(), &shared).await {
                     Ok((s, r)) => tasks = (init_task(s), init_task(r)),
                     Err(e) => {
-                        error!("Error while connecting: {}", e);
+                        error!("Error while connecting: {e}");
                         tokio::time::sleep(RECONNECT_INTERVAL).await;
                     }
                 }
