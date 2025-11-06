@@ -5,7 +5,7 @@ use librespot::playback::mixer::alsamixer::AlsaMixer;
 use librespot::{
     connect::{ConnectConfig, Spirc},
     core::{
-        Session, SessionConfig, authentication::Credentials, cache::Cache, config::DeviceType,
+        Session, SessionConfig, SpotifyUri, authentication::Credentials, cache::Cache, config::DeviceType,
         version, spotify_id::SpotifyId,
     },
     discovery::DnsSdServiceBuilder,
@@ -1307,7 +1307,7 @@ async fn get_setup() -> Setup {
         }
     }
 
-    let zeroconf_port = if no_discovery_reason.is_none() {
+    let _zeroconf_port = if no_discovery_reason.is_none() {
         opt_str(ZEROCONF_PORT)
             .map(|port| match port.parse::<u16>() {
                 Ok(value) if value != 0 => value,
@@ -1325,7 +1325,7 @@ async fn get_setup() -> Setup {
 
     // #1046: not all connections are supplied an `autoplay` user attribute to run statelessly.
     // This knob allows for a manual override.
-    let autoplay = match opt_str(AUTOPLAY) {
+    let _autoplay = match opt_str(AUTOPLAY) {
         Some(value) => match value.as_ref() {
             "on" => Some(true),
             "off" => Some(false),
@@ -1353,7 +1353,7 @@ async fn get_setup() -> Setup {
         }
     }
 
-    let zeroconf_ip: Vec<std::net::IpAddr> = if opt_present(ZEROCONF_INTERFACE) {
+    let _zeroconf_ip: Vec<std::net::IpAddr> = if opt_present(ZEROCONF_INTERFACE) {
         if let Some(zeroconf_ip) = opt_str(ZEROCONF_INTERFACE) {
             zeroconf_ip
                 .split(',')
@@ -2008,12 +2008,10 @@ async fn main() {
     if let Some(ref track_id) = setup.single_track {
         // Handle playback of single track + exit
 
-        let track = SpotifyId::from_uri(
-            track_id
-                .replace("spotty://", "spotify:track:")
-                .replace("://", ":")
-                .as_str(),
-        ).unwrap();
+        let track_uri = track_id
+            .replace("spotty://", "spotify:track:")
+            .replace("://", ":");
+        let track = SpotifyUri::from_uri(&track_uri).unwrap();
 
         if let Some(credentials) = setup.credentials {
             info!("Connecting...");
