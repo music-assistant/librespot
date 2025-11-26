@@ -1,5 +1,5 @@
 use crate::{Error, SpotifyId};
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, fmt, str::FromStr, time::Duration};
 use thiserror::Error;
 
 use librespot_protocol as protocol;
@@ -65,7 +65,10 @@ pub enum SpotifyUri {
 impl SpotifyUri {
     /// Returns whether this `SpotifyUri` is for a playable audio item, if known.
     pub fn is_playable(&self) -> bool {
-        matches!(self, SpotifyUri::Episode { .. } | SpotifyUri::Track { .. })
+        matches!(
+            self,
+            SpotifyUri::Episode { .. } | SpotifyUri::Track { .. } | SpotifyUri::Local { .. }
+        )
     }
 
     /// Gets the item type of this URI as a static string
@@ -84,7 +87,7 @@ impl SpotifyUri {
 
     /// Gets the ID of this URI. The resource ID is the component of the URI that identifies
     /// the resource after its type label. If `self` is a named ID, the user will be omitted.
-    pub fn to_id(&self) -> Result<String, Error> {
+    pub fn to_id(&self) -> String {
         match &self {
             SpotifyUri::Album { id }
             | SpotifyUri::Artist { id }
@@ -99,11 +102,9 @@ impl SpotifyUri {
                 duration,
             } => {
                 let duration_secs = duration.as_secs();
-                Ok(format!(
-                    "{artist}:{album_title}:{track_title}:{duration_secs}"
-                ))
+                format!("{artist}:{album_title}:{track_title}:{duration_secs}")
             }
-            SpotifyUri::Unknown { id, .. } => Ok(id.clone()),
+            SpotifyUri::Unknown { id, .. } => id.clone(),
         }
     }
 
@@ -147,6 +148,7 @@ impl SpotifyUri {
         };
 
         let name = parts.next().ok_or(SpotifyUriError::InvalidFormat)?;
+
         match item_type {
             SPOTIFY_ITEM_TYPE_ALBUM => Ok(Self::Album {
                 id: SpotifyId::from_base62(name)?,
@@ -167,12 +169,22 @@ impl SpotifyUri {
             SPOTIFY_ITEM_TYPE_TRACK => Ok(Self::Track {
                 id: SpotifyId::from_base62(name)?,
             }),
-            SPOTIFY_ITEM_TYPE_LOCAL => Ok(Self::Local {
-                artist: "unimplemented".to_owned(),
-                album_title: "unimplemented".to_owned(),
-                track_title: "unimplemented".to_owned(),
-                duration: Default::default(),
-            }),
+            SPOTIFY_ITEM_TYPE_LOCAL => {
+                let artist = name;
+                let album_title = parts.next().ok_or(SpotifyUriError::InvalidFormat)?;
+                let track_title = parts.next().ok_or(SpotifyUriError::InvalidFormat)?;
+                let duration_secs = parts
+                    .next()
+                    .and_then(|f| u64::from_str(f).ok())
+                    .ok_or(SpotifyUriError::InvalidFormat)?;
+
+                Ok(Self::Local {
+                    artist: artist.to_owned(),
+                    album_title: album_title.to_owned(),
+                    track_title: track_title.to_owned(),
+                    duration: Duration::from_secs(duration_secs),
+                })
+            }
             _ => Ok(Self::Unknown {
                 kind: item_type.to_owned().into(),
                 id: name.to_owned(),
@@ -191,18 +203,18 @@ impl SpotifyUri {
     /// `spotify:user:{user}:{type}:{id}`.
     ///
     /// [Spotify URI]: https://developer.spotify.com/documentation/web-api/concepts/spotify-uris-ids
-    pub fn to_uri(&self) -> Result<String, Error> {
+    pub fn to_uri(&self) -> String {
         let item_type = self.item_type();
-        let name = self.to_id()?;
 
         if let SpotifyUri::Playlist {
             id,
             user: Some(user),
         } = self
         {
-            Ok(format!("spotify:user:{user}:{item_type}:{id}"))
+            format!("spotify:user:{user}:{item_type}:{id}")
         } else {
-            Ok(format!("spotify:{item_type}:{name}"))
+            let name = self.to_id();
+            format!("spotify:{item_type}:{name}")
         }
     }
 
@@ -212,22 +224,20 @@ impl SpotifyUri {
     /// Deprecated: not all IDs can be represented in Base62, so this function has been renamed to
     /// [SpotifyUri::to_id], which this implementation forwards to.
     #[deprecated(since = "0.8.0", note = "use to_name instead")]
-    pub fn to_base62(&self) -> Result<String, Error> {
+    pub fn to_base62(&self) -> String {
         self.to_id()
     }
 }
 
 impl fmt::Debug for SpotifyUri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SpotifyUri")
-            .field(&self.to_uri().unwrap_or_else(|_| "invalid uri".into()))
-            .finish()
+        f.debug_tuple("SpotifyUri").field(&self.to_uri()).finish()
     }
 }
 
 impl fmt::Display for SpotifyUri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.to_uri().unwrap_or_else(|_| "invalid uri".into()))
+        f.write_str(&self.to_uri())
     }
 }
 
@@ -299,7 +309,7 @@ impl TryFrom<&protocol::playlist4_external::MetaItem> for SpotifyUri {
     fn try_from(item: &protocol::playlist4_external::MetaItem) -> Result<Self, Self::Error> {
         Ok(Self::Unknown {
             kind: "MetaItem".into(),
-            id: SpotifyId::try_from(item.revision())?.to_base62()?,
+            id: SpotifyId::try_from(item.revision())?.to_base62(),
         })
     }
 }
@@ -312,7 +322,7 @@ impl TryFrom<&protocol::playlist4_external::SelectedListContent> for SpotifyUri 
     ) -> Result<Self, Self::Error> {
         Ok(Self::Unknown {
             kind: "SelectedListContent".into(),
-            id: SpotifyId::try_from(playlist.revision())?.to_base62()?,
+            id: SpotifyId::try_from(playlist.revision())?.to_base62(),
         })
     }
 }
@@ -474,7 +484,7 @@ mod tests {
     #[test]
     fn to_id() {
         for c in &CONV_VALID {
-            assert_eq!(c.parsed.to_id().unwrap(), c.base62);
+            assert_eq!(c.parsed.to_id(), c.base62);
         }
     }
 
@@ -533,15 +543,33 @@ mod tests {
 
     #[test]
     fn from_local_uri() {
-        let actual = SpotifyUri::from_uri("spotify:local:xyz:123").unwrap();
+        let actual = SpotifyUri::from_uri(
+            "spotify:local:David+Wise:Donkey+Kong+Country%3A+Tropical+Freeze:Snomads+Island:127",
+        )
+        .unwrap();
 
         assert_eq!(
             actual,
             SpotifyUri::Local {
-                artist: "unimplemented".to_owned(),
-                album_title: "unimplemented".to_owned(),
-                track_title: "unimplemented".to_owned(),
-                duration: Default::default(),
+                artist: "David+Wise".to_owned(),
+                album_title: "Donkey+Kong+Country%3A+Tropical+Freeze".to_owned(),
+                track_title: "Snomads+Island".to_owned(),
+                duration: Duration::from_secs(127),
+            }
+        );
+    }
+
+    #[test]
+    fn from_local_uri_missing_fields() {
+        let actual = SpotifyUri::from_uri("spotify:local:::Snomads+Island:127").unwrap();
+
+        assert_eq!(
+            actual,
+            SpotifyUri::Local {
+                artist: "".to_owned(),
+                album_title: "".to_owned(),
+                track_title: "Snomads+Island".to_owned(),
+                duration: Duration::from_secs(127),
             }
         );
     }
@@ -567,7 +595,7 @@ mod tests {
     #[test]
     fn to_uri() {
         for c in &CONV_VALID {
-            assert_eq!(c.parsed.to_uri().unwrap(), c.uri);
+            assert_eq!(c.parsed.to_uri(), c.uri);
         }
     }
 
@@ -578,6 +606,6 @@ mod tests {
         let actual =
             SpotifyUri::from_uri("spotify:user:spotify:playlist:37i9dQZF1DWSw8liJZcPOI").unwrap();
 
-        assert_eq!(actual.to_uri().unwrap(), string);
+        assert_eq!(actual.to_uri(), string);
     }
 }

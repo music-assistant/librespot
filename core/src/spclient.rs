@@ -1,6 +1,6 @@
 use std::{
     fmt::Write,
-    time::{Duration, Instant},
+    time::{Duration, SystemTime},
 };
 
 use crate::config::{OS, os_version};
@@ -8,6 +8,7 @@ use crate::{
     Error, FileId, SpotifyId, SpotifyUri,
     apresolve::SocketAddress,
     config::SessionConfig,
+    dealer::protocol::TransferOptions,
     error::ErrorKind,
     protocol::{
         autoplay_context_request::AutoplayContextRequest,
@@ -36,6 +37,7 @@ use hyper::{
 use hyper_util::client::legacy::ResponseFuture;
 use protobuf::{Enum, EnumOrUnknown, Message, MessageFull};
 use rand::RngCore;
+use serde::Serialize;
 use sysinfo::System;
 use thiserror::Error;
 
@@ -102,6 +104,11 @@ impl Default for RequestOptions {
             base_url: None,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TransferRequest {
+    pub transfer_options: TransferOptions,
 }
 
 impl SpClient {
@@ -357,7 +364,7 @@ impl SpClient {
                     .iter()
                     .map(|d| d.domain.clone())
                     .collect(),
-                timestamp: Instant::now(),
+                timestamp: SystemTime::now(),
             };
 
             inner.client_token = Some(client_token);
@@ -574,9 +581,13 @@ impl SpClient {
         &self,
         request: BatchedEntityRequest,
     ) -> Result<BatchedExtensionResponse, Error> {
-        let endpoint = "/extended-metadata/v0/extended-metadata";
         let res = self
-            .request_with_protobuf(&Method::POST, endpoint, None, &request)
+            .request_with_protobuf(
+                &Method::POST,
+                "/extended-metadata/v0/extended-metadata",
+                None,
+                &request,
+            )
             .await?;
         Ok(BatchedExtensionResponse::parse_from_bytes(&res)?)
     }
@@ -584,7 +595,7 @@ impl SpClient {
     pub async fn get_metadata(&self, kind: ExtensionKind, id: &SpotifyUri) -> SpClientResult {
         let req = BatchedEntityRequest {
             entity_request: vec![EntityRequest {
-                entity_uri: id.to_uri()?,
+                entity_uri: id.to_uri(),
                 query: vec![ExtensionQuery {
                     extension_kind: EnumOrUnknown::new(kind),
                     ..Default::default()
@@ -634,7 +645,7 @@ impl SpClient {
     }
 
     pub async fn get_lyrics(&self, track_id: &SpotifyId) -> SpClientResult {
-        let endpoint = format!("/color-lyrics/v2/track/{}", track_id.to_base62()?);
+        let endpoint = format!("/color-lyrics/v2/track/{}", track_id.to_base62());
 
         self.request_as_json(&Method::GET, &endpoint, None, None)
             .await
@@ -647,7 +658,7 @@ impl SpClient {
     ) -> SpClientResult {
         let endpoint = format!(
             "/color-lyrics/v2/track/{}/image/spotify:image:{}",
-            track_id.to_base62()?,
+            track_id.to_base62(),
             image_id
         );
 
@@ -656,7 +667,7 @@ impl SpClient {
     }
 
     pub async fn get_playlist(&self, playlist_id: &SpotifyId) -> SpClientResult {
-        let endpoint = format!("/playlist/v2/playlist/{}", playlist_id.to_base62()?);
+        let endpoint = format!("/playlist/v2/playlist/{}", playlist_id.to_base62());
 
         self.request(&Method::GET, &endpoint, None, None).await
     }
@@ -705,7 +716,7 @@ impl SpClient {
     pub async fn get_radio_for_track(&self, track_uri: &SpotifyUri) -> SpClientResult {
         let endpoint = format!(
             "/inspiredby-mix/v2/seed_to_playlist/{}?response-format=json",
-            track_uri.to_uri()?
+            track_uri.to_uri()
         );
 
         self.request_as_json(&Method::GET, &endpoint, None, None)
@@ -739,7 +750,7 @@ impl SpClient {
         let previous_track_str = previous_tracks
             .iter()
             .map(|track| track.to_base62())
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Vec<_>>()
             .join(",");
         // better than checking `previous_tracks.len() > 0` because the `filter_map` could still return 0 items
         if !previous_track_str.is_empty() {
@@ -762,7 +773,7 @@ impl SpClient {
     pub async fn get_audio_storage(&self, file_id: &FileId) -> SpClientResult {
         let endpoint = format!(
             "/storage-resolve/files/audio/interactive/{}",
-            file_id.to_base16()?
+            file_id.to_base16()
         );
         self.request(&Method::GET, &endpoint, None, None).await
     }
@@ -802,13 +813,13 @@ impl SpClient {
 
     // Audio preview in 96 kbps MP3, unencrypted
     pub async fn get_audio_preview(&self, preview_id: &FileId) -> SpClientResult {
-        let attribute = "audio-preview-url-template";
+        const ATTRIBUTE: &str = "audio-preview-url-template";
         let template = self
             .session()
-            .get_user_attribute(attribute)
-            .ok_or_else(|| SpClientError::Attribute(attribute.to_string()))?;
+            .get_user_attribute(ATTRIBUTE)
+            .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
 
-        let mut url = template.replace("{id}", &preview_id.to_base16()?);
+        let mut url = template.replace("{id}", &preview_id.to_base16());
         let separator = match url.find('?') {
             Some(_) => "&",
             None => "?",
@@ -820,24 +831,24 @@ impl SpClient {
 
     // The first 128 kB of a track, unencrypted
     pub async fn get_head_file(&self, file_id: &FileId) -> SpClientResult {
-        let attribute = "head-files-url";
+        const ATTRIBUTE: &str = "head-files-url";
         let template = self
             .session()
-            .get_user_attribute(attribute)
-            .ok_or_else(|| SpClientError::Attribute(attribute.to_string()))?;
+            .get_user_attribute(ATTRIBUTE)
+            .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
 
-        let url = template.replace("{file_id}", &file_id.to_base16()?);
+        let url = template.replace("{file_id}", &file_id.to_base16());
 
         self.request_url(&url).await
     }
 
     pub async fn get_image(&self, image_id: &FileId) -> SpClientResult {
-        let attribute = "image-url";
+        const ATTRIBUTE: &str = "image-url";
         let template = self
             .session()
-            .get_user_attribute(attribute)
-            .ok_or_else(|| SpClientError::Attribute(attribute.to_string()))?;
-        let url = template.replace("{file_id}", &image_id.to_base16()?);
+            .get_user_attribute(ATTRIBUTE)
+            .ok_or_else(|| SpClientError::Attribute(ATTRIBUTE.to_string()))?;
+        let url = template.replace("{file_id}", &image_id.to_base16());
 
         self.request_url(&url).await
     }
@@ -921,5 +932,29 @@ impl SpClient {
         );
 
         self.request(&Method::GET, &endpoint, None, None).await
+    }
+
+    /// Triggers the transfers of the playback from one device to another
+    ///
+    /// Using the same `device_id` for `from_device_id` and `to_device_id`, initiates the transfer
+    /// from the currently active device.
+    pub async fn transfer(
+        &self,
+        from_device_id: &str,
+        to_device_id: &str,
+        transfer_request: Option<&TransferRequest>,
+    ) -> SpClientResult {
+        let body = transfer_request.map(serde_json::to_string).transpose()?;
+
+        let endpoint =
+            format!("/connect-state/v1/connect/transfer/from/{from_device_id}/to/{to_device_id}");
+        self.request_with_options(
+            &Method::POST,
+            &endpoint,
+            None,
+            body.as_deref().map(|s| s.as_bytes()),
+            &NO_METRICS_AND_SALT,
+        )
+        .await
     }
 }

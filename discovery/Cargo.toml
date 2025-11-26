@@ -1,6 +1,6 @@
 [package]
 name = "librespot-discovery"
-version.workspace = true
+version = "0.8.0"
 rust-version.workspace = true
 authors = ["Paul Lietar <paul@lietar.net>"]
 license.workspace = true
@@ -13,7 +13,7 @@ edition.workspace = true
 default = ["with-libmdns", "native-tls"]
 
 # Discovery backends
-with-avahi = ["dep:serde", "dep:zbus"]
+with-avahi = ["dep:serde", "dep:zbus", "futures-util/async-await-macro"]
 with-dns-sd = ["dep:dns-sd"]
 with-libmdns = ["dep:libmdns"]
 
@@ -23,7 +23,7 @@ rustls-tls-native-roots = ["librespot-core/rustls-tls-native-roots"]
 rustls-tls-webpki-roots = ["librespot-core/rustls-tls-webpki-roots"]
 
 [dependencies]
-librespot-core = { version = "0.7.1", path = "../core", default-features = false }
+librespot-core = { version = "0.8.0", path = "../core", default-features = false }
 
 aes = "0.8"
 base64 = "0.22"

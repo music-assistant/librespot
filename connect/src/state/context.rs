@@ -446,7 +446,7 @@ impl ConnectState {
         provider: Option<Provider>,
     ) -> Result<ProvidedTrack, Error> {
         let id = match (ctx_track.uri.as_ref(), ctx_track.gid.as_ref()) {
-            (Some(uri), _) if uri.contains(['?', '%']) => {
+            (Some(uri), _) if uri.contains(['?']) => {
                 Err(StateError::InvalidTrackUri(Some(uri.clone())))?
             }
             (Some(uri), _) if !uri.is_empty() => SpotifyUri::from_uri(uri)?,
@@ -456,7 +456,7 @@ impl ConnectState {
             _ => Err(StateError::InvalidTrackUri(None))?,
         };
 
-        let uri = id.to_uri()?.replace("unknown", "track");
+        let uri = id.to_uri().replace("unknown", "track");
 
         let provider = if self.unavailable_uri.contains(&uri) {
             Provider::Unavailable
