@@ -154,6 +154,7 @@ pub enum VolumeCtrl {
     Fixed,
     Linear,
     Log(f64),
+    Passthrough,
 }
 
 impl FromStr for VolumeCtrl {
@@ -182,6 +183,7 @@ impl VolumeCtrl {
             "fixed" => Ok(Fixed),
             "linear" => Ok(Linear),
             "log" => Ok(Log(db_range)),
+            "passthrough" => Ok(Passthrough),
             _ => Err(()),
         }
     }

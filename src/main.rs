@@ -926,17 +926,14 @@ async fn get_setup() -> Setup {
         }
     }
 
-    #[cfg(feature = "alsa-backend")]
     let mixer_type = opt_str(MIXER_TYPE);
-    #[cfg(not(feature = "alsa-backend"))]
-    let mixer_type: Option<String> = None;
 
     let mixer = mixer::find(mixer_type.as_deref()).unwrap_or_else(|| {
         invalid_error_msg(
             MIXER_TYPE,
             MIXER_TYPE_SHORT,
             &opt_str(MIXER_TYPE).unwrap_or_default(),
-            "alsa, softvol",
+            "alsa, softvol, passthrough",
             "softvol",
         );
 
@@ -1130,7 +1127,7 @@ async fn get_setup() -> Setup {
                         VOLUME_CTRL,
                         VOLUME_CTRL_SHORT,
                         volume_ctrl,
-                        "cubic, fixed, linear, log",
+                        "cubic, fixed, linear, log, passthrough",
                         "log",
                     );
 
@@ -1555,6 +1552,7 @@ async fn get_setup() -> Setup {
         let name = name.unwrap_or(connect_default_config.name);
         let device_type = device_type.unwrap_or(connect_default_config.device_type);
         let initial_volume = initial_volume.unwrap_or(connect_default_config.initial_volume);
+        // Only disable volume control for Fixed mode, not for Passthrough
         let disable_volume = matches!(mixer_config.volume_ctrl, VolumeCtrl::Fixed);
         let volume_steps = volume_steps.unwrap_or(connect_default_config.volume_steps);
 

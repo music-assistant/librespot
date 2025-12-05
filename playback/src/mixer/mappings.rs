@@ -76,6 +76,7 @@ impl MappedCtrl for VolumeCtrl {
             Self::Fixed => 0.0,
             Self::Linear => Self::DEFAULT_DB_RANGE, // arbitrary, could be anything > 0
             Self::Log(db_range) | Self::Cubic(db_range) => db_range,
+            Self::Passthrough => Self::DEFAULT_DB_RANGE, // arbitrary, could be anything > 0
         }
     }
 
@@ -89,7 +90,7 @@ impl MappedCtrl for VolumeCtrl {
     }
 
     fn range_ok(&self) -> bool {
-        self.db_range() > 0.0 || matches!(self, Self::Fixed | Self::Linear)
+        self.db_range() > 0.0 || matches!(self, Self::Fixed | Self::Linear | Self::Passthrough)
     }
 }
 
